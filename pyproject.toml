@@ -9,9 +9,12 @@ description = "Parse Twitch archive VODs for Codenames Online matches."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "numpy>=1.26,<3.0",
+    "pillow>=10.0,<12.0",
     "pydantic>=2.7,<3.0",
     "pydantic-settings>=2.2,<3.0",
     "sqlalchemy>=2.0,<3.0",
+    "streamlink>=7.0,<8.0",
     "typer>=0.12,<1.0",
 ]
 
