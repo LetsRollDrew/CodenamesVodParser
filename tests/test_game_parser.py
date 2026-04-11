@@ -4,12 +4,17 @@ from app.game_parser import (
     GameBoundarySignal,
     build_game_record,
     classify_guess_result,
+    derive_game_windows,
+    parse_game_window,
+    parse_segment_games,
     reconstruct_game,
     split_game_windows,
 )
 from app.gamelog_parser import ClueEvent, GuessEvent
-from app.models import CardColor, GuessResult, PlayerRole, PlayerRosterEntry, TeamColor, WinReason
+from app.models import CardColor, GuessResult, ImageBoundingBox, OCRDetection, PlayerRole, PlayerRosterEntry, TeamColor, WinReason
 from app.review_queue import materialize_review_items
+from app.roi_config import ROIConfig
+from app.vod_source import FrameSample
 
 
 def make_roster() -> list[PlayerRosterEntry]:
@@ -43,6 +48,48 @@ def make_roster() -> list[PlayerRosterEntry]:
             avatar_hash="d",
         ),
     ]
+
+
+class SequencedOCRBackend:
+    def __init__(self, responses: dict[str, object]) -> None:
+        self.responses = responses
+        self.indices: dict[str, int] = {}
+
+    def detect_text(self, image, *, hint: str | None = None):
+        assert image.size > 0
+        key = hint or ""
+        value = self.responses.get(key, [])
+        if value and isinstance(value[0], OCRDetection):
+            return list(value)
+        sequence = value if isinstance(value, list) else []
+        index = self.indices.get(key, 0)
+        self.indices[key] = index + 1
+        if not sequence:
+            return []
+        return list(sequence[min(index, len(sequence) - 1)])
+
+
+def make_roi_config() -> ROIConfig:
+    return ROIConfig.from_raw(
+        {
+            "left_team_panel": {"x": 0.0, "y": 0.0, "width": 0.18, "height": 1.0},
+            "right_team_panel": {"x": 0.82, "y": 0.0, "width": 0.18, "height": 1.0},
+            "board_region": {"x": 0.18, "y": 0.10, "width": 0.60, "height": 0.72},
+            "game_log_region": {"x": 0.80, "y": 0.50, "width": 0.18, "height": 0.40},
+            "left_counter_region": {"x": 0.05, "y": 0.35, "width": 0.05, "height": 0.08},
+            "right_counter_region": {"x": 0.90, "y": 0.35, "width": 0.05, "height": 0.08},
+            "top_banner_region": {"x": 0.18, "y": 0.0, "width": 0.60, "height": 0.10},
+            "end_banner_region": {"x": 0.18, "y": 0.80, "width": 0.64, "height": 0.16},
+        }
+    )
+
+
+def paint_region(frame, box, color):
+    frame[box.top : box.bottom, box.left : box.right] = color
+
+
+def make_base_frame() -> object:
+    return __import__("numpy").zeros((600, 1000, 3), dtype=__import__("numpy").uint8)
 
 
 def test_classify_guess_result_covers_blue_and_red_teams() -> None:
@@ -201,3 +248,174 @@ def test_split_game_windows_splits_on_end_state_and_new_board() -> None:
     )
 
     assert windows == [(100.0, 300.0), (400.0, 500.0), (500.0, 520.0)]
+
+
+def test_parse_game_window_reconstructs_one_game_from_frame_samples() -> None:
+    frame_a = make_base_frame()
+    frame_b = make_base_frame()
+    log_box = ImageBoundingBox(left=800, top=300, right=980, bottom=540)
+    paint_region(frame_a, log_box, (10, 10, 10))
+    paint_region(frame_b, log_box, (60, 60, 60))
+
+    backend = SequencedOCRBackend(
+        {
+            "blue:operative:in_game": [
+                OCRDetection(text="†", confidence=0.92, box=ImageBoundingBox(left=20, top=20, right=40, bottom=40))
+            ],
+            "blue:spymaster:in_game": [
+                OCRDetection(text="fembluca", confidence=0.95, box=ImageBoundingBox(left=20, top=20, right=90, bottom=40))
+            ],
+            "board:0:0": [
+                OCRDetection(text="ANTARCTICA", confidence=0.97, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))
+            ],
+            "game_log": [
+                [
+                    OCRDetection(text="fembluca", confidence=0.98, box=ImageBoundingBox(left=8, top=16, right=70, bottom=34)),
+                    OCRDetection(text="COLD", confidence=0.99, box=ImageBoundingBox(left=78, top=14, right=132, bottom=36)),
+                    OCRDetection(text="2", confidence=0.97, box=ImageBoundingBox(left=142, top=14, right=156, bottom=36)),
+                ],
+                [
+                    OCRDetection(text="fembluca", confidence=0.98, box=ImageBoundingBox(left=8, top=16, right=70, bottom=34)),
+                    OCRDetection(text="COLD", confidence=0.99, box=ImageBoundingBox(left=78, top=14, right=132, bottom=36)),
+                    OCRDetection(text="2", confidence=0.97, box=ImageBoundingBox(left=142, top=14, right=156, bottom=36)),
+                    OCRDetection(text="†", confidence=0.82, box=ImageBoundingBox(left=8, top=68, right=28, bottom=86)),
+                    OCRDetection(text="ANTARCTlCA", confidence=0.88, box=ImageBoundingBox(left=38, top=66, right=130, bottom=88)),
+                ],
+            ],
+            "left_counter": [
+                [OCRDetection(text="9", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))],
+                [OCRDetection(text="0", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))],
+            ],
+            "right_counter": [
+                [OCRDetection(text="8", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))],
+                [OCRDetection(text="1", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))],
+            ],
+        }
+    )
+
+    record, review_items = parse_game_window(
+        vod_id="vod-1",
+        game_index=0,
+        frame_samples=[
+            FrameSample(timestamp_sec=10.0, frame_bgr=frame_a, frame_index_in_window=0),
+            FrameSample(timestamp_sec=11.0, frame_bgr=frame_b, frame_index_in_window=1),
+        ],
+        roi_config=make_roi_config(),
+        ocr_backend=backend,
+    )
+
+    assert record.vod_id == "vod-1"
+    assert len(record.turns) == 1
+    assert len(record.turns[0].guesses) == 1
+    assert record.turns[0].guesses[0].word == "ANTARCTICA"
+    assert record.winner_team is TeamColor.BLUE
+    assert review_items == []
+
+
+def test_parse_segment_games_slices_multiple_windows() -> None:
+    frame_a = make_base_frame()
+    frame_b = make_base_frame()
+    frame_c = make_base_frame()
+    frame_d = make_base_frame()
+
+    backend = SequencedOCRBackend(
+        {
+            "blue:operative:in_game": [
+                OCRDetection(text="†", confidence=0.92, box=ImageBoundingBox(left=20, top=20, right=40, bottom=40))
+            ],
+            "blue:spymaster:in_game": [
+                OCRDetection(text="fembluca", confidence=0.95, box=ImageBoundingBox(left=20, top=20, right=90, bottom=40))
+            ],
+            "board:0:0": [
+                OCRDetection(text="ANTARCTICA", confidence=0.97, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))
+            ],
+            "left_counter": [
+                [OCRDetection(text="0", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))],
+                [OCRDetection(text="0", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))],
+                [OCRDetection(text="2", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))],
+                [OCRDetection(text="2", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))],
+            ],
+            "right_counter": [
+                [OCRDetection(text="1", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))],
+                [OCRDetection(text="1", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))],
+                [OCRDetection(text="0", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))],
+                [OCRDetection(text="0", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))],
+            ],
+        }
+    )
+
+    records, review_items = parse_segment_games(
+        vod_id="vod-2",
+        frame_samples=[
+            FrameSample(timestamp_sec=10.0, frame_bgr=frame_a, frame_index_in_window=0),
+            FrameSample(timestamp_sec=11.0, frame_bgr=frame_b, frame_index_in_window=1),
+            FrameSample(timestamp_sec=20.0, frame_bgr=frame_c, frame_index_in_window=2),
+            FrameSample(timestamp_sec=21.0, frame_bgr=frame_d, frame_index_in_window=3),
+        ],
+        roi_config=make_roi_config(),
+        ocr_backend=backend,
+        game_windows=[(10.0, 11.0), (20.0, 21.0)],
+    )
+
+    assert len(records) == 2
+    assert records[0].winner_team is TeamColor.BLUE
+    assert records[1].winner_team is TeamColor.RED
+    assert review_items == []
+
+
+def test_derive_game_windows_skips_setup_and_finds_end_state() -> None:
+    setup_frame = make_base_frame()
+    game_frame = make_base_frame()
+    end_frame = make_base_frame()
+    game_frame[100:300, 200:600] = 40
+    end_frame[100:300, 200:600] = 180
+
+    backend = SequencedOCRBackend(
+        {
+            "top_banner": [
+                [OCRDetection(text="GAME SETTINGS", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=40, bottom=12))],
+                [],
+                [],
+            ],
+            "end_banner": [
+                [],
+                [],
+                [OCRDetection(text="PLAY NEXT GAME", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=70, bottom=12))],
+            ],
+            "left_counter": [
+                [],
+                [OCRDetection(text="2", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))],
+                [OCRDetection(text="0", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))],
+            ],
+            "right_counter": [
+                [],
+                [OCRDetection(text="3", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))],
+                [OCRDetection(text="1", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))],
+            ],
+            "blue:operative:in_game": [
+                OCRDetection(text="â€ ", confidence=0.92, box=ImageBoundingBox(left=20, top=20, right=40, bottom=40))
+            ],
+            "blue:spymaster:in_game": [
+                OCRDetection(text="fembluca", confidence=0.95, box=ImageBoundingBox(left=20, top=20, right=90, bottom=40))
+            ],
+            "board:0:0": [
+                OCRDetection(text="ANTARCTICA", confidence=0.97, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))
+            ],
+            "game_log": [
+                [],
+                [],
+            ],
+        }
+    )
+
+    windows = derive_game_windows(
+        [
+            FrameSample(timestamp_sec=10.0, frame_bgr=setup_frame, frame_index_in_window=0),
+            FrameSample(timestamp_sec=20.0, frame_bgr=game_frame, frame_index_in_window=1),
+            FrameSample(timestamp_sec=30.0, frame_bgr=end_frame, frame_index_in_window=2),
+        ],
+        roi_config=make_roi_config(),
+        ocr_backend=backend,
+    )
+
+    assert windows == [(20.0, 30.0)]
