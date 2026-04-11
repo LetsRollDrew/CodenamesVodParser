@@ -176,3 +176,72 @@ def test_parse_game_log_can_use_avatar_match_when_tiny_name_is_missing() -> None
     assert len(events) == 1
     assert isinstance(events[0], GuessEvent)
     assert events[0].player_name == "†"
+
+
+def test_parse_game_log_fuzzy_matches_small_name_ocr_to_roster() -> None:
+    frame = np.zeros((600, 1000, 3), dtype=np.uint8)
+    roi_config = make_roi_config()
+    board_state = make_board_state()
+    roster = make_roster()
+    log_box = ImageBoundingBox(left=800, top=300, right=980, bottom=540)
+    guess_row = ImageBoundingBox(left=12, top=64, right=170, bottom=96)
+    paint_box(
+        frame,
+        ImageBoundingBox(
+            left=log_box.left + guess_row.left,
+            top=log_box.top + guess_row.top,
+            right=log_box.left + guess_row.right,
+            bottom=log_box.top + guess_row.bottom,
+        ),
+        (255, 80, 80),
+    )
+
+    responses = {
+        "game_log": [
+            OCRDetection(text="Chery", confidence=0.70, box=ImageBoundingBox(left=8, top=68, right=46, bottom=86)),
+            OCRDetection(text="TAP", confidence=0.93, box=ImageBoundingBox(left=64, top=66, right=98, bottom=88)),
+        ]
+    }
+
+    events = parse_game_log(
+        frame,
+        roi_config,
+        FakeOCRBackend(responses),
+        roster,
+        board_state,
+        timestamp_sec=123.0,
+    )
+
+    assert len(events) == 1
+    assert isinstance(events[0], GuessEvent)
+    assert events[0].player_name == "Cherry"
+
+
+def test_parse_game_log_fuzzy_matches_log_name_to_roster_name() -> None:
+    frame = np.zeros((600, 1000, 3), dtype=np.uint8)
+    roi_config = make_roi_config()
+    board_state = make_board_state()
+    roster = make_roster()
+    log_box = ImageBoundingBox(left=800, top=300, right=980, bottom=540)
+    guess_row = ImageBoundingBox(left=12, top=168, right=170, bottom=200)
+    paint_box(frame, ImageBoundingBox(left=log_box.left + guess_row.left, top=log_box.top + guess_row.top, right=log_box.left + guess_row.right, bottom=log_box.top + guess_row.bottom), (60, 80, 220))
+
+    responses = {
+        "game_log": [
+            OCRDetection(text="Cherny", confidence=0.81, box=ImageBoundingBox(left=8, top=172, right=54, bottom=190)),
+            OCRDetection(text="TAP", confidence=0.93, box=ImageBoundingBox(left=64, top=170, right=98, bottom=192)),
+        ]
+    }
+
+    events = parse_game_log(
+        frame,
+        roi_config,
+        FakeOCRBackend(responses),
+        roster,
+        board_state,
+        timestamp_sec=123.0,
+    )
+
+    assert len(events) == 1
+    assert isinstance(events[0], GuessEvent)
+    assert events[0].player_name == "Cherry"
