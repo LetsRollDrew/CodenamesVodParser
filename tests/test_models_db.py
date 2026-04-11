@@ -1,4 +1,6 @@
 from datetime import datetime, timezone
+from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
@@ -27,8 +29,15 @@ from app.models import (
 )
 
 
-def test_init_db_creates_expected_tables(tmp_path) -> None:
-    db_url = f"sqlite:///{(tmp_path / 'parser.db').as_posix()}"
+def workspace_db_url(filename: str) -> str:
+    base_dir = Path(__file__).resolve().parent / ".tmp"
+    base_dir.mkdir(exist_ok=True)
+    db_path = base_dir / f"{filename}-{uuid4().hex}.db"
+    return f"sqlite:///{db_path.as_posix()}"
+
+
+def test_init_db_creates_expected_tables() -> None:
+    db_url = workspace_db_url("parser")
 
     engine = create_sqlalchemy_engine(url=db_url)
     init_db(engine)
@@ -75,8 +84,8 @@ def test_typed_models_validate_core_constraints() -> None:
         )
 
 
-def test_round_trip_relationships_and_cascade_delete(tmp_path) -> None:
-    db_url = f"sqlite:///{(tmp_path / 'relationships.db').as_posix()}"
+def test_round_trip_relationships_and_cascade_delete() -> None:
+    db_url = workspace_db_url("relationships")
     engine = create_sqlalchemy_engine(url=db_url)
     init_db(engine)
     session_factory = create_session_factory(engine)
@@ -172,8 +181,8 @@ def test_round_trip_relationships_and_cascade_delete(tmp_path) -> None:
         assert session.scalar(select(ReviewQueueItem)) is not None
 
 
-def test_sqlite_foreign_keys_are_enforced(tmp_path) -> None:
-    db_url = f"sqlite:///{(tmp_path / 'foreign_keys.db').as_posix()}"
+def test_sqlite_foreign_keys_are_enforced() -> None:
+    db_url = workspace_db_url("foreign-keys")
     engine = create_sqlalchemy_engine(url=db_url)
     init_db(engine)
     session_factory = create_session_factory(engine)
