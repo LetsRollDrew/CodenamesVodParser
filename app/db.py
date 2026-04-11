@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Iterator
 
 from sqlalchemy import Engine, create_engine, event
+from sqlalchemy.engine import URL
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import Settings, get_settings
@@ -46,24 +47,35 @@ def _configure_sqlite_foreign_keys(engine: Engine) -> None:
         cursor.close()
 
 
+def create_engine_from_url(url: str | URL, *, echo: bool = False) -> Engine:
+    """Create a SQLAlchemy engine for the provided URL."""
+
+    rendered_url = str(url)
+    _ensure_sqlite_parent_directory(rendered_url)
+    engine = create_engine(url, echo=echo)
+    if rendered_url.startswith("sqlite"):
+        _configure_sqlite_foreign_keys(engine)
+    return engine
+
+
+def create_engine_from_settings(settings: Settings | None = None, *, echo: bool = False) -> Engine:
+    """Create an engine from application settings."""
+
+    resolved_settings = settings or get_settings()
+    return create_engine_from_url(resolved_settings.sqlite_url, echo=echo)
+
+
 def create_sqlalchemy_engine(
     *,
     settings: Settings | None = None,
-    url: str | None = None,
+    url: str | URL | None = None,
     echo: bool = False,
 ) -> Engine:
-    """Create the shared SQLAlchemy engine."""
+    """Backward-compatible engine helper."""
 
-    resolved_url = url
-    if resolved_url is None:
-        resolved_settings = settings or get_settings()
-        resolved_url = resolved_settings.sqlite_url
-
-    _ensure_sqlite_parent_directory(resolved_url)
-    engine = create_engine(resolved_url, echo=echo)
-    if resolved_url.startswith("sqlite"):
-        _configure_sqlite_foreign_keys(engine)
-    return engine
+    if url is not None:
+        return create_engine_from_url(url, echo=echo)
+    return create_engine_from_settings(settings, echo=echo)
 
 
 def create_session_factory(engine: Engine) -> SessionFactory:
