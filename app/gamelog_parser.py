@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from difflib import SequenceMatcher
 from typing import Literal
 
 import numpy as np
@@ -137,9 +138,9 @@ def _parse_row(
         for player in roster
     }
     player_detections = [
-        (detection, roster_lookup[detection.text.casefold()])
+        (detection, matched_player)
         for detection in row
-        if detection.text.casefold() in roster_lookup
+        if (matched_player := _match_roster_entry(detection.text, roster_lookup)) is not None
     ]
     count_detection = next(
         (detection for detection in row if _is_clue_count_token(detection.text)),
@@ -298,3 +299,28 @@ def _card_color_confidence(log_frame: np.ndarray, chip_box, card_color: CardColo
 def _is_clue_count_token(text: str) -> bool:
     stripped = text.strip()
     return stripped.isdigit() or stripped in {"∞", "INF", "INFINITY"}
+
+
+def _match_roster_entry(
+    text: str,
+    roster_lookup: dict[str, PlayerRosterEntry],
+    *,
+    minimum_similarity: float = 0.72,
+) -> PlayerRosterEntry | None:
+    normalized = collapse_whitespace(text).casefold()
+    if not normalized:
+        return None
+    if normalized in roster_lookup:
+        return roster_lookup[normalized]
+
+    best_key = None
+    best_similarity = 0.0
+    for key in roster_lookup:
+        similarity = SequenceMatcher(a=normalized, b=key).ratio()
+        if similarity > best_similarity:
+            best_similarity = similarity
+            best_key = key
+
+    if best_key is None or best_similarity < minimum_similarity:
+        return None
+    return roster_lookup[best_key]
