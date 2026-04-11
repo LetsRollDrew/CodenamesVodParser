@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import CheckConstraint, Enum as SAEnum, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -81,6 +81,59 @@ class PlayerRosterEntry(BaseModel):
     team_color: TeamColor
     role: PlayerRole
     avatar_hash: str | None = None
+
+
+class ImageBoundingBox(BaseModel):
+    left: int = Field(ge=0)
+    top: int = Field(ge=0)
+    right: int = Field(ge=0)
+    bottom: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _validate_bounds(self) -> "ImageBoundingBox":
+        if self.right <= self.left:
+            raise ValueError("right must be greater than left")
+        if self.bottom <= self.top:
+            raise ValueError("bottom must be greater than top")
+        return self
+
+    @property
+    def width(self) -> int:
+        return self.right - self.left
+
+    @property
+    def height(self) -> int:
+        return self.bottom - self.top
+
+    @property
+    def center_x(self) -> float:
+        return (self.left + self.right) / 2
+
+    @property
+    def center_y(self) -> float:
+        return (self.top + self.bottom) / 2
+
+
+class OCRDetection(BaseModel):
+    text: str
+    confidence: float = Field(ge=0, le=1)
+    box: ImageBoundingBox
+
+
+class BoardCell(BaseModel):
+    row: int = Field(ge=0, lt=5)
+    col: int = Field(ge=0, lt=5)
+    word: str
+    confidence: float = Field(ge=0, le=1)
+    box: ImageBoundingBox
+
+
+class BoardState(BaseModel):
+    cells: list[BoardCell] = Field(default_factory=list)
+
+    @property
+    def words(self) -> list[str]:
+        return [cell.word for cell in self.cells]
 
 
 class GuessRecord(BaseModel):
