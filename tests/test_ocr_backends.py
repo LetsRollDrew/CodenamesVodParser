@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import types
+import builtins
 
 import numpy as np
 import pytest
@@ -16,6 +17,14 @@ def test_create_ocr_backend_rejects_unknown_name() -> None:
 
 def test_paddle_backend_raises_clear_error_when_missing(monkeypatch) -> None:
     monkeypatch.delitem(sys.modules, "paddleocr", raising=False)
+    original_import = builtins.__import__
+
+    def failing_import(name, *args, **kwargs):
+        if name == "paddleocr":
+            raise ImportError("simulated missing paddleocr")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", failing_import)
 
     with pytest.raises(OCRBackendError):
         PaddleOCRBackend()
@@ -23,36 +32,50 @@ def test_paddle_backend_raises_clear_error_when_missing(monkeypatch) -> None:
 
 def test_easyocr_backend_raises_clear_error_when_missing(monkeypatch) -> None:
     monkeypatch.delitem(sys.modules, "easyocr", raising=False)
+    original_import = builtins.__import__
+
+    def failing_import(name, *args, **kwargs):
+        if name == "easyocr":
+            raise ImportError("simulated missing easyocr")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", failing_import)
 
     with pytest.raises(OCRBackendError):
         EasyOCRBackend()
 
 
 def test_paddle_backend_translates_results(monkeypatch) -> None:
+    captured_kwargs: dict[str, object] = {}
+
     class FakePaddleOCR:
         def __init__(self, **kwargs) -> None:
-            self.kwargs = kwargs
+            captured_kwargs.update(kwargs)
 
-        def ocr(self, image, cls=False):
-            del image, cls
+        def predict(self, image, *, use_textline_orientation=None):
+            del image, use_textline_orientation
             return [
-                [
-                    (
-                        [[1, 2], [11, 2], [11, 12], [1, 12]],
-                        ("COLD", 0.95),
-                    )
-                ]
+                {
+                    "res": {
+                        "dt_polys": [
+                            np.array([[1, 2], [11, 2], [11, 12], [1, 12]]),
+                        ],
+                        "rec_texts": ["COLD"],
+                        "rec_scores": [0.95],
+                    }
+                }
             ]
 
     module = types.SimpleNamespace(PaddleOCR=FakePaddleOCR)
     monkeypatch.setitem(sys.modules, "paddleocr", module)
 
-    backend = PaddleOCRBackend()
+    backend = PaddleOCRBackend(device="gpu:0")
     detections = backend.detect_text(np.zeros((20, 20, 3), dtype=np.uint8))
 
     assert len(detections) == 1
     assert detections[0].text == "COLD"
     assert detections[0].confidence == 0.95
+    assert captured_kwargs["device"] == "gpu:0"
 
 
 def test_easyocr_backend_translates_results(monkeypatch) -> None:

@@ -23,6 +23,12 @@ dev = [
     "pytest>=8.2,<9.0",
     "ruff>=0.5,<1.0",
 ]
+easyocr = [
+    "easyocr>=1.7,<2.0",
+]
+paddle = [
+    "paddleocr>=3.3,<4.0",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
