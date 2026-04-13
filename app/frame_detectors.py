@@ -6,14 +6,19 @@ from PIL import Image
 import numpy as np
 
 from app.models import CardColor
-from app.ocr import OCRBackend, collapse_whitespace, pick_best_detection
+from app.ocr import OCRBackend, collapse_whitespace, detect_text_with_fallback, pick_best_detection, prepare_ocr_image
 from app.roi_config import ROIConfig, crop_roi
 
 
 def parse_counter_value(counter_frame: np.ndarray, ocr_backend: OCRBackend, *, hint: str) -> int | None:
     """Parse a numeric counter value from a counter crop."""
 
-    detections = ocr_backend.detect_text(counter_frame, hint=hint)
+    detections = detect_text_with_fallback(
+        ocr_backend,
+        counter_frame,
+        prepared_image=prepare_ocr_image(counter_frame, profile="counter"),
+        hint=hint,
+    )
     detection = pick_best_detection(detections)
     if detection is None:
         return None
@@ -21,6 +26,8 @@ def parse_counter_value(counter_frame: np.ndarray, ocr_backend: OCRBackend, *, h
     digits = "".join(character for character in detection.text if character.isdigit())
     if not digits:
         return None
+    if len(digits) > 1:
+        digits = digits[-1]
     return int(digits)
 
 
@@ -48,18 +55,51 @@ def has_play_next_game(frame: np.ndarray, roi_config: ROIConfig, ocr_backend: OC
     """Return whether the end banner region contains 'Play next game'."""
 
     banner_frame = crop_roi(frame, roi_config.require("end_banner_region"))
-    detections = ocr_backend.detect_text(banner_frame, hint="end_banner")
+    detections = detect_text_with_fallback(
+        ocr_backend,
+        banner_frame,
+        prepared_image=prepare_ocr_image(banner_frame, profile="banner"),
+        hint="end_banner",
+    )
     banner_text = " ".join(collapse_whitespace(item.text).upper() for item in detections)
     return "PLAY NEXT GAME" in banner_text
+
+
+def parse_top_banner_text(frame: np.ndarray, roi_config: ROIConfig, ocr_backend: OCRBackend) -> str:
+    """Parse the top banner text once for reuse within a frame pass."""
+
+    top_frame = crop_roi(frame, roi_config.require("top_banner_region"))
+    detections = detect_text_with_fallback(
+        ocr_backend,
+        top_frame,
+        prepared_image=prepare_ocr_image(top_frame, profile="banner"),
+        hint="top_banner",
+    )
+    return " ".join(collapse_whitespace(item.text).upper() for item in detections)
+
+
+def is_winner_banner_text(banner_text: str) -> bool:
+    """Return whether a parsed top banner contains a winner message."""
+
+    return "YOUR TEAM WINS" in banner_text or "OPPOSING TEAM WINS" in banner_text
+
+
+def winner_banner_visible(frame: np.ndarray, roi_config: ROIConfig, ocr_backend: OCRBackend) -> bool:
+    """Return whether the top banner contains a winner message."""
+
+    return is_winner_banner_text(parse_top_banner_text(frame, roi_config, ocr_backend))
+
+
+def is_setup_screen_text(top_text: str) -> bool:
+    """Return whether parsed top-banner text matches the setup/lobby screen."""
+
+    return "START GAME" in top_text or "GAME SETTINGS" in top_text
 
 
 def setup_screen_visible(frame: np.ndarray, roi_config: ROIConfig, ocr_backend: OCRBackend) -> bool:
     """Return whether the setup/lobby screen is visible."""
 
-    top_frame = crop_roi(frame, roi_config.require("top_banner_region"))
-    detections = ocr_backend.detect_text(top_frame, hint="top_banner")
-    top_text = " ".join(collapse_whitespace(item.text).upper() for item in detections)
-    return "START GAME" in top_text or "GAME SETTINGS" in top_text
+    return is_setup_screen_text(parse_top_banner_text(frame, roi_config, ocr_backend))
 
 
 def make_board_fingerprint(frame: np.ndarray, roi_config: ROIConfig, *, hash_size: int = 8) -> str:

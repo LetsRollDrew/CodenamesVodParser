@@ -12,9 +12,11 @@ from app.board_parser import parse_board_words
 from app.frame_detectors import (
     detect_assassin_in_events,
     has_play_next_game,
+    is_setup_screen_text,
+    is_winner_banner_text,
     make_board_fingerprint,
     parse_game_counters,
-    setup_screen_visible,
+    parse_top_banner_text,
 )
 from app.gamelog_parser import ClueEvent, GuessEvent, log_has_changed, parse_game_log
 from app.models import (
@@ -48,6 +50,7 @@ class GameBoundarySignal(BaseModel):
     board_fingerprint: str | None = None
     setup_visible: bool = False
     play_next_visible: bool = False
+    winner_banner_visible: bool = False
     left_counter: int | None = Field(default=None, ge=0)
     right_counter: int | None = Field(default=None, ge=0)
     assassin_revealed: bool = False
@@ -127,12 +130,11 @@ def reconstruct_game(
                 reason=f"Unknown player '{event.player_name}' in guess event",
                 timestamp_sec=event.timestamp_sec,
             )
-            continue
 
-        result = classify_guess_result(player.team_color, event.card_color)
+        result = classify_guess_result(current_turn.team_color, event.card_color)
         current_turn.guesses.append(
             GuessRecord(
-                player_name=event.player_name,
+                player_name=event.player_name or "unknown",
                 word=event.word,
                 card_color=event.card_color,
                 result=result,
@@ -260,6 +262,7 @@ def split_game_windows(signals: Sequence[GameBoundarySignal]) -> list[tuple[floa
         game_over = (
             signal.assassin_revealed
             or signal.play_next_visible
+            or signal.winner_banner_visible
             or signal.left_counter == 0
             or signal.right_counter == 0
         )
@@ -452,10 +455,12 @@ def derive_game_windows(
 
     for sample in ordered_frames:
         frame = sample.frame_bgr
-        setup_visible = setup_screen_visible(frame, roi_config, ocr_backend)
+        top_banner_text = parse_top_banner_text(frame, roi_config, ocr_backend)
+        setup_visible = is_setup_screen_text(top_banner_text)
         board_fingerprint = make_board_fingerprint(frame, roi_config)
         left_counter, right_counter = parse_game_counters(frame, roi_config, ocr_backend)
         play_next_visible = has_play_next_game(frame, roi_config, ocr_backend)
+        winner_visible = is_winner_banner_text(top_banner_text)
         assassin_revealed = False
 
         if not setup_visible:
@@ -489,13 +494,14 @@ def derive_game_windows(
                 board_fingerprint=board_fingerprint,
                 setup_visible=setup_visible,
                 play_next_visible=play_next_visible,
+                winner_banner_visible=winner_visible,
                 left_counter=left_counter,
                 right_counter=right_counter,
                 assassin_revealed=assassin_revealed,
             )
         )
 
-        if play_next_visible or left_counter == 0 or right_counter == 0 or assassin_revealed:
+        if winner_visible or play_next_visible or left_counter == 0 or right_counter == 0 or assassin_revealed:
             current_players = None
             current_board_state = None
             previous_log_frame = None

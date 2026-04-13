@@ -375,12 +375,12 @@ def test_derive_game_windows_skips_setup_and_finds_end_state() -> None:
             "top_banner": [
                 [OCRDetection(text="GAME SETTINGS", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=40, bottom=12))],
                 [],
-                [],
+                [OCRDetection(text="YOUR TEAM WINS!", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=70, bottom=12))],
             ],
             "end_banner": [
                 [],
                 [],
-                [OCRDetection(text="PLAY NEXT GAME", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=70, bottom=12))],
+                [],
             ],
             "left_counter": [
                 [],

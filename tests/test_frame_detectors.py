@@ -9,6 +9,7 @@ from app.frame_detectors import (
     parse_counter_value,
     parse_game_counters,
     setup_screen_visible,
+    winner_banner_visible,
 )
 from app.models import CardColor, ImageBoundingBox, OCRDetection
 from app.roi_config import ROIConfig
@@ -108,6 +109,24 @@ def test_banner_detectors_use_targeted_ocr_regions() -> None:
 
     assert has_play_next_game(frame, roi_config, ocr_backend)
     assert setup_screen_visible(frame, roi_config, ocr_backend)
+
+
+def test_winner_banner_detector_recognizes_end_messages() -> None:
+    frame = np.ones((600, 1000, 3), dtype=np.uint8) * 255
+    roi_config = make_roi_config()
+    ocr_backend = FakeOCRBackend(
+        {
+            "top_banner": [
+                OCRDetection(
+                    text="Opposing Team Wins!",
+                    confidence=0.99,
+                    box=ImageBoundingBox(left=1, top=1, right=80, bottom=12),
+                )
+            ]
+        }
+    )
+
+    assert winner_banner_visible(frame, roi_config, ocr_backend)
 
 
 def test_make_board_fingerprint_changes_with_board_pixels() -> None:
