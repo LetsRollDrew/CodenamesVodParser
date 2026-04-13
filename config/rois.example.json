@@ -1,52 +1,100 @@
 {
   "regions": {
     "left_team_panel": {
-      "x": 0.01,
-      "y": 0.07,
-      "width": 0.18,
-      "height": 0.58
+      "x": 0.04,
+      "y": 0.18,
+      "width": 0.14,
+      "height": 0.55
     },
     "right_team_panel": {
-      "x": 0.81,
-      "y": 0.07,
-      "width": 0.18,
-      "height": 0.58
+      "x": 0.845,
+      "y": 0.18,
+      "width": 0.14,
+      "height": 0.55
+    },
+    "blue_operatives_region": {
+      "x": 0.052,
+      "y": 0.218,
+      "width": 0.124,
+      "height": 0.112
+    },
+    "blue_operatives_overlay_region": {
+      "x": 0.052,
+      "y": 0.205,
+      "width": 0.124,
+      "height": 0.15
+    },
+    "blue_spymaster_region": {
+      "x": 0.053,
+      "y": 0.52,
+      "width": 0.121,
+      "height": 0.14
+    },
+    "red_operatives_region": {
+      "x": 0.848,
+      "y": 0.218,
+      "width": 0.125,
+      "height": 0.112
+    },
+    "red_operatives_overlay_region": {
+      "x": 0.848,
+      "y": 0.205,
+      "width": 0.125,
+      "height": 0.15
+    },
+    "red_spymaster_region": {
+      "x": 0.848,
+      "y": 0.52,
+      "width": 0.121,
+      "height": 0.14
     },
     "board_region": {
-      "x": 0.20,
-      "y": 0.10,
-      "width": 0.46,
-      "height": 0.56
+      "x": 0.188,
+      "y": 0.178,
+      "width": 0.64,
+      "height": 0.702
+    },
+    "board_overlay_region": {
+      "x": 0.188,
+      "y": 0.135,
+      "width": 0.64,
+      "height": 0.805
     },
     "game_log_region": {
-      "x": 0.67,
-      "y": 0.41,
-      "width": 0.14,
-      "height": 0.38
+      "x": 0.845,
+      "y": 0.69,
+      "width": 0.13,
+      "height": 0.27
+    },
+    "game_log_content_region": {
+      "x": 0.847,
+      "y": 0.705,
+      "width": 0.122,
+      "height": 0.235
     },
     "left_counter_region": {
-      "x": 0.06,
-      "y": 0.01,
-      "width": 0.06,
-      "height": 0.06
+      "x": 0.052,
+      "y": 0.394,
+      "width": 0.086,
+      "height": 0.09
     },
     "right_counter_region": {
-      "x": 0.88,
-      "y": 0.01,
-      "width": 0.06,
-      "height": 0.06
+      "x": 0.900,
+      "y": 0.394,
+      "width": 0.073,
+      "height": 0.09
     },
     "top_banner_region": {
-      "x": 0.18,
-      "y": 0.00,
-      "width": 0.48,
+      "x": 0.29,
+      "y": 0.10,
+      "width": 0.44,
       "height": 0.09
     },
     "end_banner_region": {
-      "x": 0.24,
-      "y": 0.77,
-      "width": 0.52,
-      "height": 0.16
+      "x": 0.33,
+      "y": 0.86,
+      "width": 0.30,
+      "height": 0.08
     }
   }
 }

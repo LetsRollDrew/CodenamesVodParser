@@ -87,6 +87,12 @@ class ROIConfig(BaseModel):
         except KeyError as exc:
             raise KeyError(f"Unknown ROI region: {name}") from exc
 
+    def get(self, name: str) -> NormalizedROI | None:
+        return self.regions.get(name)
+
+    def optional(self, name: str) -> NormalizedROI | None:
+        return self.regions.get(name)
+
 
 def load_roi_config(path: str | Path) -> ROIConfig:
     """Load ROI config from a JSON file."""
