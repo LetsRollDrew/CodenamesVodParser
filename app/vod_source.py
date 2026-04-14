@@ -6,6 +6,7 @@ import io
 import subprocess
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import BinaryIO, Callable, Iterator, Mapping, Protocol
 
 import numpy as np
@@ -80,6 +81,17 @@ class VodSource:
         if fps <= 0:
             raise ValueError("fps must be > 0")
 
+        local_path = Path(vod_url)
+        if local_path.exists():
+            yield from self._iter_frames_from_input_source(
+                input_source=str(local_path),
+                start_sec=start_sec,
+                duration_sec=duration_sec,
+                fps=fps,
+                use_seekable_input=True,
+            )
+            return
+
         session = self.stream_session_factory()
         available_streams = self._get_streams(session, vod_url)
         stream = available_streams.get(self.stream_quality)
@@ -100,6 +112,36 @@ class VodSource:
             use_seekable_input=input_source is not None,
         )
 
+        yield from self._iter_frames_from_input_source(
+            input_source=str(input_source) if input_source is not None else None,
+            start_sec=start_sec,
+            duration_sec=duration_sec,
+            fps=fps,
+            use_seekable_input=input_source is not None,
+            stream=stream if input_source is None else None,
+        )
+
+    def _iter_frames_from_input_source(
+        self,
+        *,
+        input_source: str | None,
+        start_sec: float,
+        duration_sec: float,
+        fps: float,
+        use_seekable_input: bool,
+        stream: SupportsOpen | None = None,
+    ) -> Iterator[FrameSample]:
+        stream_handle: BinaryIO | None = None
+        feed_thread: threading.Thread | None = None
+
+        command = self._build_ffmpeg_command(
+            input_source="pipe:0" if input_source is None else input_source,
+            start_sec=start_sec,
+            duration_sec=duration_sec,
+            fps=fps,
+            use_seekable_input=use_seekable_input,
+        )
+
         process = self.popen_factory(
             command,
             stdin=subprocess.PIPE if input_source is None else None,
@@ -109,6 +151,8 @@ class VodSource:
 
         try:
             if input_source is None:
+                if stream is None:
+                    raise VodSourceError("A stream handle is required for non-seekable input")
                 stream_handle = self._open_stream(stream)
                 stdin_handle = process.stdin
                 if stdin_handle is None:
