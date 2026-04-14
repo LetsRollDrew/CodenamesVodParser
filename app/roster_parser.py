@@ -9,7 +9,7 @@ import numpy as np
 from PIL import Image
 
 from app.models import ImageBoundingBox, OCRDetection, PlayerRole, PlayerRosterEntry, TeamColor
-from app.ocr import OCRBackend, collapse_whitespace
+from app.ocr import OCRBackend, collapse_whitespace, detect_text_with_fallback, prepare_ocr_image
 from app.roi_config import ROIConfig, crop_roi
 
 _EXCLUDED_NAME_TEXTS = {
@@ -69,6 +69,10 @@ def parse_rosters(
 ) -> list[PlayerRosterEntry]:
     """Parse player rosters from the blue and red side panels."""
 
+    explicit_entries = _parse_explicit_regions(frame, roi_config, ocr_backend)
+    if explicit_entries:
+        return explicit_entries
+
     players: list[PlayerRosterEntry] = []
     players.extend(
         _parse_team_panel(
@@ -85,6 +89,37 @@ def parse_rosters(
         )
     )
     return players
+
+
+def _parse_explicit_regions(
+    frame: np.ndarray,
+    roi_config: ROIConfig,
+    ocr_backend: OCRBackend,
+) -> list[PlayerRosterEntry]:
+    explicit_specs = (
+        ("blue_operatives_region", TeamColor.BLUE, PlayerRole.OPERATIVE),
+        ("blue_spymaster_region", TeamColor.BLUE, PlayerRole.SPYMASTER),
+        ("red_operatives_region", TeamColor.RED, PlayerRole.OPERATIVE),
+        ("red_spymaster_region", TeamColor.RED, PlayerRole.SPYMASTER),
+    )
+    if not all(roi_config.optional(name) is not None for name, _, _ in explicit_specs):
+        return []
+
+    entries: list[PlayerRosterEntry] = []
+    for region_name, team_color, role in explicit_specs:
+        region = roi_config.optional(region_name)
+        if region is None:
+            continue
+        entries.extend(
+            _parse_role_section(
+                crop_roi(frame, region),
+                team_color=team_color,
+                role=role,
+                ocr_backend=ocr_backend,
+                layout_name="explicit",
+            )
+        )
+    return entries
 
 
 def _parse_team_panel(
@@ -133,10 +168,21 @@ def _parse_role_section(
     layout_name: str,
 ) -> list[PlayerRosterEntry]:
     hint = f"{team_color.value}:{role.value}:{layout_name}"
-    detections = _filter_name_detections(ocr_backend.detect_text(section_frame, hint=hint))
+    text_frame, text_top_offset = _crop_role_text_band(section_frame, role=role)
+    prepared_section = prepare_ocr_image(text_frame, profile="name_strip")
+    detections = _filter_name_detections(
+        detect_text_with_fallback(
+            ocr_backend,
+            text_frame,
+            prepared_image=prepared_section,
+            hint=hint,
+        )
+    )
     entries: list[PlayerRosterEntry] = []
 
-    for detection in sorted(detections, key=lambda item: item.box.center_x):
+    adjusted_detections = [_offset_detection_box(detection, top_offset=text_top_offset) for detection in detections]
+
+    for detection in sorted(adjusted_detections, key=lambda item: item.box.center_x):
         display_name = collapse_whitespace(detection.text)
         if not display_name:
             continue
@@ -157,6 +203,37 @@ def _parse_role_section(
     for entry in entries:
         deduped[(entry.player_name, entry.team_color, entry.role)] = entry
     return list(deduped.values())
+
+
+def _crop_role_text_band(section_frame: np.ndarray, *, role: PlayerRole) -> tuple[np.ndarray, int]:
+    height = section_frame.shape[0]
+    if height <= 0:
+        return section_frame, 0
+
+    if role is PlayerRole.OPERATIVE:
+        top = int(round(height * 0.56))
+        bottom = int(round(height * 0.98))
+    else:
+        top = int(round(height * 0.54))
+        bottom = int(round(height * 0.94))
+
+    top = max(min(top, height - 1), 0)
+    bottom = max(min(bottom, height), top + 1)
+    return section_frame[top:bottom, :].copy(), top
+
+
+def _offset_detection_box(detection: OCRDetection, *, top_offset: int) -> OCRDetection:
+    box = detection.box
+    return detection.model_copy(
+        update={
+            "box": ImageBoundingBox(
+                left=box.left,
+                top=box.top + top_offset,
+                right=box.right,
+                bottom=box.bottom + top_offset,
+            )
+        }
+    )
 
 
 def _filter_name_detections(detections: Iterable[OCRDetection]) -> list[OCRDetection]:
