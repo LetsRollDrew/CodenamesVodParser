@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from app.board_parser import snap_word_to_board
 from app.models import BoardState, CardColor, OCRDetection, PlayerRosterEntry, TeamColor
-from app.ocr import OCRBackend, collapse_whitespace
+from app.ocr import OCRBackend, collapse_whitespace, detect_text_with_fallback, prepare_ocr_image
 from app.roi_config import ROIConfig, crop_roi
 
 
@@ -71,17 +71,29 @@ def parse_game_log(
 ) -> list[ClueEvent | GuessEvent]:
     """Parse clue and guess events from the configured game-log ROI."""
 
-    log_frame = crop_roi(frame, roi_config.require("game_log_region"))
+    log_roi = roi_config.optional("game_log_content_region") or roi_config.require("game_log_region")
+    log_frame = crop_roi(frame, log_roi)
+    prepared_log_frame = prepare_ocr_image(log_frame, profile="game_log")
     detections = sorted(
         (
             detection.model_copy(update={"text": collapse_whitespace(detection.text)})
-            for detection in ocr_backend.detect_text(log_frame, hint="game_log")
+            for detection in detect_text_with_fallback(
+                ocr_backend,
+                log_frame,
+                prepared_image=prepared_log_frame,
+                hint="game_log",
+            )
         ),
         key=lambda item: (item.box.center_y, item.box.left),
     )
     rows = _group_detections_by_row(detections)
 
+    roster_lookup = {
+        collapse_whitespace(player.display_name).casefold(): player
+        for player in roster
+    }
     events: list[ClueEvent | GuessEvent] = []
+    pending_support_players: list[PlayerRosterEntry] = []
     for row_index, row in enumerate(rows):
         avatar_match_name = None if avatar_matches_by_row is None else avatar_matches_by_row.get(row_index)
         parsed = _parse_row(
@@ -95,8 +107,109 @@ def parse_game_log(
         )
         if parsed is not None:
             events.append(parsed)
+            pending_support_players = []
+            continue
+
+        guess_events = _parse_guess_events(
+            log_frame,
+            row,
+            roster_lookup,
+            board_state,
+            timestamp_sec=timestamp_sec,
+            sequence_index_base=row_index * 10,
+            avatar_match_name=avatar_match_name,
+            support_players=pending_support_players,
+        )
+        if guess_events:
+            events.extend(guess_events)
+            pending_support_players = []
+            continue
+
+        pending_support_players = _extract_support_players(row, roster_lookup)
 
     return events
+
+
+def _parse_guess_events(
+    log_frame: np.ndarray,
+    row: Sequence[OCRDetection],
+    roster_lookup: dict[str, PlayerRosterEntry],
+    board_state: BoardState,
+    *,
+    timestamp_sec: float,
+    sequence_index_base: int,
+    avatar_match_name: str | None,
+    support_players: Sequence[PlayerRosterEntry],
+) -> list[GuessEvent]:
+    guess_words = _resolve_guess_words(row, board_state)
+    if not guess_words:
+        return []
+
+    current_row_players = [entry for _, entry in _extract_player_detections(row, roster_lookup)]
+    inferred_player_name = avatar_match_name
+    if inferred_player_name is None:
+        operative_players = [entry for entry in current_row_players if entry.role.value == "operative"]
+        if len(operative_players) == 1 and len(guess_words) == 1:
+            inferred_player_name = operative_players[0].display_name
+        elif len(support_players) == 1 and len(guess_words) == 1:
+            inferred_player_name = support_players[0].display_name
+
+    events: list[GuessEvent] = []
+    for guess_index, (detection, snapped_word) in enumerate(guess_words):
+        chip_box = _expand_box_for_guess_chip(detection.box, log_frame.shape)
+        card_color = _sample_card_color(log_frame, chip_box)
+        confidence_parts = [detection.confidence, _card_color_confidence(log_frame, chip_box, card_color)]
+        if inferred_player_name is not None:
+            confidence_parts.append(0.9)
+        events.append(
+            GuessEvent(
+                player_name=inferred_player_name or "unknown",
+                word=snapped_word,
+                card_color=card_color,
+                timestamp_sec=timestamp_sec,
+                sequence_index=sequence_index_base + guess_index,
+                confidence=sum(confidence_parts) / len(confidence_parts),
+            )
+        )
+
+    return events
+
+
+def _extract_support_players(
+    row: Sequence[OCRDetection],
+    roster_lookup: dict[str, PlayerRosterEntry],
+) -> list[PlayerRosterEntry]:
+    return [
+        entry
+        for _, entry in _extract_player_detections(row, roster_lookup)
+        if entry.role.value == "operative"
+    ]
+
+
+def _extract_player_detections(
+    row: Sequence[OCRDetection],
+    roster_lookup: dict[str, PlayerRosterEntry],
+) -> list[tuple[OCRDetection, PlayerRosterEntry]]:
+    return [
+        (detection, matched_player)
+        for detection in row
+        if (matched_player := _match_roster_entry(detection.text, roster_lookup)) is not None
+    ]
+
+
+def _resolve_guess_words(
+    row: Sequence[OCRDetection],
+    board_state: BoardState,
+) -> list[tuple[OCRDetection, str]]:
+    resolved: list[tuple[OCRDetection, str]] = []
+    seen_words: set[str] = set()
+    for detection in row:
+        snapped = snap_word_to_board(detection.text, board_state)
+        if snapped is None or snapped in seen_words:
+            continue
+        resolved.append((detection, snapped))
+        seen_words.add(snapped)
+    return resolved
 
 
 def _group_detections_by_row(detections: Sequence[OCRDetection]) -> list[list[OCRDetection]]:
@@ -148,10 +261,26 @@ def _parse_row(
     )
 
     if count_detection is not None:
+        row_box = _row_box(row)
+        sampled_team_color = _sample_team_color(log_frame, row_box)
         spymaster_entry = (
             next((entry for _, entry in player_detections if entry.role.value == "spymaster"), None)
             or next((entry for _, entry in player_detections), None)
         )
+        if spymaster_entry is None:
+            spymaster_entry = _match_best_roster_entry(
+                (
+                    detection.text
+                    for detection in row
+                    if detection is not count_detection
+                ),
+                [
+                    entry
+                    for entry in roster
+                    if entry.role.value == "spymaster" and entry.team_color is sampled_team_color
+                ],
+                minimum_similarity=0.55,
+            )
         clue_text_detection = max(
             (
                 detection
@@ -164,10 +293,18 @@ def _parse_row(
         )
         if clue_text_detection is None:
             return None
+        if spymaster_entry is None:
+            team_spymasters = [
+                entry
+                for entry in roster
+                if entry.team_color == sampled_team_color and entry.role.value == "spymaster"
+            ]
+            if len(team_spymasters) == 1:
+                spymaster_entry = team_spymasters[0]
         team_color = (
             spymaster_entry.team_color
             if spymaster_entry is not None
-            else _sample_team_color(log_frame, _row_box(row))
+            else sampled_team_color
         )
         spymaster_name = spymaster_entry.display_name if spymaster_entry is not None else "unknown"
         confidence_parts = [count_detection.confidence, clue_text_detection.confidence]
@@ -324,3 +461,33 @@ def _match_roster_entry(
     if best_key is None or best_similarity < minimum_similarity:
         return None
     return roster_lookup[best_key]
+
+
+def _match_best_roster_entry(
+    texts: Sequence[str] | list[str] | tuple[str, ...] | object,
+    candidates: Sequence[PlayerRosterEntry],
+    *,
+    minimum_similarity: float,
+) -> PlayerRosterEntry | None:
+    candidate_list = list(candidates)
+    if not candidate_list:
+        return None
+
+    best_entry: PlayerRosterEntry | None = None
+    best_similarity = 0.0
+    for text in texts:
+        normalized = collapse_whitespace(str(text)).casefold()
+        if not normalized:
+            continue
+        for entry in candidate_list:
+            similarity = SequenceMatcher(
+                a=normalized,
+                b=collapse_whitespace(entry.display_name).casefold(),
+            ).ratio()
+            if similarity > best_similarity:
+                best_similarity = similarity
+                best_entry = entry
+
+    if best_entry is None or best_similarity < minimum_similarity:
+        return None
+    return best_entry
