@@ -196,6 +196,7 @@ class EasyOCRBackend:
     language: str = "en"
     gpu: bool = False
     _reader: Any | None = None
+    _easyocr_module: Any | None = None
 
     def __post_init__(self) -> None:
         try:
@@ -204,7 +205,8 @@ class EasyOCRBackend:
             raise OCRBackendError(
                 "EasyOCR is not installed. Install `easyocr` to use the easyocr backend."
             ) from exc
-        self._reader = easyocr.Reader([self.language], gpu=self.gpu)
+        self._easyocr_module = easyocr
+        self._reader = self._create_reader(gpu=self.gpu)
 
     def detect_text(
         self,
@@ -216,12 +218,19 @@ class EasyOCRBackend:
         if self._reader is None:
             raise OCRBackendError("EasyOCR backend was not initialized")
         rgb_image = image[:, :, ::-1] if image.ndim == 3 and image.shape[2] == 3 else image
-        raw_results = self._reader.readtext(rgb_image, detail=1)
+        try:
+            raw_results = self._reader.readtext(rgb_image, detail=1)
+        except RuntimeError as exc:
+            if not self._should_fallback_to_cpu(exc):
+                raise
+            self.gpu = False
+            self._reader = self._create_reader(gpu=False)
+            raw_results = self._reader.readtext(rgb_image, detail=1)
         detections: list[OCRDetection] = []
         for item in raw_results or []:
             points, text, confidence = item
-            xs = [int(round(point[0])) for point in points]
-            ys = [int(round(point[1])) for point in points]
+            xs = [max(0, int(round(point[0]))) for point in points]
+            ys = [max(0, int(round(point[1]))) for point in points]
             detections.append(
                 OCRDetection(
                     text=str(text),
@@ -235,3 +244,13 @@ class EasyOCRBackend:
                 )
             )
         return detections
+
+    def _create_reader(self, *, gpu: bool) -> Any:
+        if self._easyocr_module is None:
+            raise OCRBackendError("EasyOCR backend was not initialized")
+        return self._easyocr_module.Reader([self.language], gpu=gpu)
+
+    @staticmethod
+    def _should_fallback_to_cpu(exc: RuntimeError) -> bool:
+        message = str(exc).lower()
+        return "cuda error" in message or "illegal memory access" in message
