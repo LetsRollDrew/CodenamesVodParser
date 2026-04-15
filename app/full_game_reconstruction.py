@@ -74,6 +74,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--scan-fps", type=float, default=1.0)
     parser.add_argument("--selector-window-sec", type=float, default=1.5)
     parser.add_argument("--selector-fps", type=float, default=4.0)
+    parser.add_argument("--skip-selector-attribution", action="store_true")
     parser.add_argument("--process-timeout", type=float, default=180.0)
     return parser.parse_args()
 
@@ -843,6 +844,7 @@ def reconstruct_game_segment(
     selector_output_dir: Path,
     selector_window_sec: float,
     selector_fps: float,
+    enable_selector_attribution: bool = True,
 ) -> dict[str, Any]:
     roi_config = load_roi_config(roi_config_path)
     backend_kwargs = {"gpu": _normalize_device_is_gpu(ocr_device)}
@@ -1017,32 +1019,33 @@ def reconstruct_game_segment(
         "winner_team": winner_team,
         "win_reason": win_reason,
     }
-    try:
-        selector_results = attribute_selectors_from_analysis(
-            analysis=_selector_payload(turns, clip_path, best_roster, best_board.words),
-            analysis_reference_path=None,
-            roi_config_path=roi_config_path,
-            output_dir=selector_output_dir,
-            ffmpeg_path=ffmpeg_path,
-            ocr_backend_name=ocr_backend_name,
-            ocr_device=ocr_device,
-            window_sec=selector_window_sec,
-            fps=selector_fps,
-        )
-        selector_lookup = {
-            (item["turn_index"], item["guess_index"]): item
-            for item in selector_results["guesses"]
-        }
-        for turn in analysis["turns"]:
-            for guess_index, guess in enumerate(turn["guesses"]):
-                selector_item = selector_lookup.get((turn["turn_index"], guess_index))
-                if selector_item is None:
-                    continue
-                guess["selector_crop_path"] = selector_item["crop_path"]
-                guess["selector_crop_x4_path"] = selector_item["crop_x4_path"]
-                guess["selector_candidates"] = selector_item["candidate_scores"]
-    except Exception as error:
-        analysis["selector_attribution_error"] = str(error)
+    if enable_selector_attribution:
+        try:
+            selector_results = attribute_selectors_from_analysis(
+                analysis=_selector_payload(turns, clip_path, best_roster, best_board.words),
+                analysis_reference_path=None,
+                roi_config_path=roi_config_path,
+                output_dir=selector_output_dir,
+                ffmpeg_path=ffmpeg_path,
+                ocr_backend_name=ocr_backend_name,
+                ocr_device=ocr_device,
+                window_sec=selector_window_sec,
+                fps=selector_fps,
+            )
+            selector_lookup = {
+                (item["turn_index"], item["guess_index"]): item
+                for item in selector_results["guesses"]
+            }
+            for turn in analysis["turns"]:
+                for guess_index, guess in enumerate(turn["guesses"]):
+                    selector_item = selector_lookup.get((turn["turn_index"], guess_index))
+                    if selector_item is None:
+                        continue
+                    guess["selector_crop_path"] = selector_item["crop_path"]
+                    guess["selector_crop_x4_path"] = selector_item["crop_x4_path"]
+                    guess["selector_candidates"] = selector_item["candidate_scores"]
+        except Exception as error:
+            analysis["selector_attribution_error"] = str(error)
 
     return analysis
 
@@ -1064,6 +1067,7 @@ def main() -> int:
         selector_output_dir=output_dir / "selector_attribution",
         selector_window_sec=args.selector_window_sec,
         selector_fps=args.selector_fps,
+        enable_selector_attribution=not args.skip_selector_attribution,
     )
     output_path = output_dir / "result.json"
     output_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
