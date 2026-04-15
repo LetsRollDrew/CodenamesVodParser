@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from app.board_parser import parse_board_words
-from app.frame_detectors import parse_game_counters, parse_top_banner_text
+from app.frame_detectors import parse_game_counters, parse_top_banner_text, setup_screen_visible
 from app.gamelog_parser import ClueEvent, GuessEvent, log_has_changed, parse_game_log
 from app.models import BoardState, CardColor, PlayerRosterEntry, TeamColor
 from app.ocr_backends import create_ocr_backend
@@ -864,10 +864,13 @@ def reconstruct_game_segment(
     previous_log_frame = None
 
     clip_path = vod_url
+    observation_seed_end_sec = min(start_sec + 180.0, start_sec + duration_sec)
+
     for sample in vod_source.iter_window_frames(vod_url, start_sec, duration_sec, scan_fps):
         frame = sample.frame_bgr
+        setup_visible = setup_screen_visible(frame, roi_config, ocr_backend)
 
-        if sample.timestamp_sec <= start_sec + 60.0:
+        if sample.timestamp_sec <= observation_seed_end_sec and not setup_visible:
             parsed_roster = parse_rosters(frame, roi_config, ocr_backend)
             if parsed_roster:
                 _observe_roster(roster_observations, parsed_roster)
