@@ -4,16 +4,16 @@ from datetime import datetime, timezone
 
 import numpy as np
 
-from app.models import VodMeta
-from app.roi_config import ROIConfig
-from app.segment_finder import (
+from app.core.models import VodMeta
+from app.infra.roi_config import ROIConfig
+from app.infra.vod_source import FrameSample
+from app.vision.detection.segment_finder import (
     FrameSignal,
     SegmentFinderConfig,
     classify_window,
     find_codenames_segment,
     score_frame_signal,
 )
-from app.vod_source import FrameSample
 
 
 def make_roi_config() -> ROIConfig:

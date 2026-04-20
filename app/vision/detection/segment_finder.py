@@ -1,13 +1,13 @@
-"""Deterministic segment detection for finding Codenames sections in a VOD tail."""
+"""Deterministic segment detection for finding Codenames sections in a VOD tail"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Protocol
 
-from app.models import SegmentBounds, VodMeta
-from app.roi_config import ROIConfig
-from app.vod_source import FrameSample, VodSource
+from app.core.models import SegmentBounds, VodMeta
+from app.infra.roi_config import ROIConfig
+from app.infra.vod_source import FrameSample, VodSource
 
 
 @dataclass(frozen=True, slots=True)
