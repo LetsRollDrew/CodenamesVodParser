@@ -1,15 +1,16 @@
-"""Concrete OCR backend adapters with lazy optional imports."""
+"""Concrete OCR backend adapters with lazy optional imports"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import inspect
 import math
 from typing import Any, Literal
 
 import numpy as np
 
-from app.models import ImageBoundingBox, OCRDetection
-from app.ocr import OCRBackend
+from app.core.models import ImageBoundingBox, OCRDetection
+from app.vision.ocr.preprocessing import OCRBackend
 
 
 class OCRBackendError(RuntimeError):
@@ -214,18 +215,18 @@ class EasyOCRBackend:
         *,
         hint: str | None = None,
     ) -> list[OCRDetection]:
-        del hint
         if self._reader is None:
             raise OCRBackendError("EasyOCR backend was not initialized")
         rgb_image = image[:, :, ::-1] if image.ndim == 3 and image.shape[2] == 3 else image
+        readtext_kwargs = self._build_readtext_kwargs(hint)
         try:
-            raw_results = self._reader.readtext(rgb_image, detail=1)
+            raw_results = self._reader.readtext(rgb_image, **readtext_kwargs)
         except RuntimeError as exc:
             if not self._should_fallback_to_cpu(exc):
                 raise
             self.gpu = False
             self._reader = self._create_reader(gpu=False)
-            raw_results = self._reader.readtext(rgb_image, detail=1)
+            raw_results = self._reader.readtext(rgb_image, **readtext_kwargs)
         detections: list[OCRDetection] = []
         for item in raw_results or []:
             points, text, confidence = item
@@ -249,6 +250,94 @@ class EasyOCRBackend:
         if self._easyocr_module is None:
             raise OCRBackendError("EasyOCR backend was not initialized")
         return self._easyocr_module.Reader([self.language], gpu=gpu)
+
+    def _build_readtext_kwargs(self, hint: str | None) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {"detail": 1}
+        hint_key = (hint or "").casefold()
+        if any(token in hint_key for token in ("left_counter", "right_counter", "center_clue_count")):
+            kwargs.update(
+                allowlist="0123456789INF\u221eIL|",
+                contrast_ths=0.05,
+                text_threshold=0.45,
+                low_text=0.2,
+            )
+        elif hint_key.startswith("board:") or any(
+            token in hint_key for token in ("top_banner", "center_clue_banner", "setup_panel", "end_banner")
+        ):
+            kwargs.update(
+                allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz -'",
+                contrast_ths=0.08,
+                text_threshold=0.5,
+                low_text=0.25,
+            )
+        elif any(
+            token in hint_key
+            for token in (
+                "selector_name:",
+                "selector_refs:",
+                "blue:operative:",
+                "blue:spymaster:",
+                "red:operative:",
+                "red:spymaster:",
+            )
+        ):
+            kwargs.update(
+                allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_ -'",
+                contrast_ths=0.06,
+                text_threshold=0.45,
+                low_text=0.2,
+            )
+        elif hint_key.startswith("game_log:"):
+            kwargs.update(self._game_log_readtext_kwargs(hint_key))
+        elif "game_log" in hint_key or hint_key.startswith("selector_probe:"):
+            kwargs.update(
+                allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_ -'",
+                contrast_ths=0.06,
+                text_threshold=0.45,
+                low_text=0.2,
+            )
+        elif hint_key.startswith("selector_chip:"):
+            kwargs.update(
+                allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_ -'",
+                contrast_ths=0.06,
+                text_threshold=0.4,
+                low_text=0.2,
+            )
+
+        return self._filter_supported_readtext_kwargs(kwargs)
+
+    def _game_log_readtext_kwargs(self, hint_key: str) -> dict[str, Any]:
+        field_name = hint_key.split(":")[-1]
+        if field_name in {"count", "bubble", "count_bubble"}:
+            return {
+                "allowlist": "0123456789INF\u221eIL|",
+                "contrast_ths": 0.05,
+                "text_threshold": 0.42,
+                "low_text": 0.18,
+            }
+        if field_name in {"player", "name", "selector", "support_player"}:
+            return {
+                "allowlist": "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_ -'",
+                "contrast_ths": 0.06,
+                "text_threshold": 0.45,
+                "low_text": 0.2,
+            }
+        return {
+            "allowlist": "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_ -'",
+            "contrast_ths": 0.06,
+            "text_threshold": 0.45,
+            "low_text": 0.2,
+        }
+
+    def _filter_supported_readtext_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        if self._reader is None:
+            return kwargs
+        try:
+            signature = inspect.signature(self._reader.readtext)
+        except (TypeError, ValueError):
+            return kwargs
+        supported = set(signature.parameters)
+        return {key: value for key, value in kwargs.items() if key in supported}
 
     @staticmethod
     def _should_fallback_to_cpu(exc: RuntimeError) -> bool:
