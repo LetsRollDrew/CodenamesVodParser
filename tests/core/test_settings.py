@@ -1,13 +1,16 @@
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
 
-from app.config import ConfigurationError, Settings
+from app.core.settings import ConfigurationError, Settings
 
 
-def test_settings_load_from_env_file(tmp_path: Path) -> None:
-    env_file = tmp_path / ".env"
+def test_settings_load_from_env_file() -> None:
+    env_dir = Path("build/test-temp/settings") / uuid4().hex
+    env_dir.mkdir(parents=True, exist_ok=True)
+    env_file = env_dir / ".env"
     env_file.write_text(
         "\n".join(
             [

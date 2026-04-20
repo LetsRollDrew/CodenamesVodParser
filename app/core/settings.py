@@ -1,4 +1,4 @@
-"""Application settings and configuration helpers."""
+"""Application settings and configuration helpers"""
 
 from __future__ import annotations
 
