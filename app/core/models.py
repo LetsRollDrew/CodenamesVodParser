@@ -1,4 +1,4 @@
-"""Typed parser models and SQLAlchemy ORM schema."""
+"""Typed parser models and SQLAlchemy ORM schema"""
 
 from __future__ import annotations
 
@@ -126,6 +126,10 @@ class BoardCell(BaseModel):
     word: str
     confidence: float = Field(ge=0, le=1)
     box: ImageBoundingBox
+    raw_ocr_text: str = ""
+    dictionary_similarity: float = Field(default=0.0, ge=0, le=1)
+    dictionary_runner_up_gap: float = Field(default=0.0, ge=0, le=1)
+    corrected_by_default_dictionary: bool = False
 
 
 class BoardState(BaseModel):

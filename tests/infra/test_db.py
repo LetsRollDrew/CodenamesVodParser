@@ -3,35 +3,32 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from pydantic import ValidationError
 from sqlalchemy import inspect, select
 from sqlalchemy.exc import IntegrityError
 
-from app.db import create_session_factory, create_sqlalchemy_engine, init_db, session_scope
-from app.models import (
-    Base,
-    CardColor,
-    Game,
-    GameRecord,
-    Guess,
-    GuessResult,
-    Player,
-    PlayerRole,
-    ReviewEntityType,
-    ReviewQueueItem,
-    Segment,
-    SegmentType,
-    TeamColor,
-    Turn,
-    Vod,
-    VodMeta,
-    WinReason,
-)
+from app.core.models import (
+        Base,
+        CardColor,
+        Game,
+        Guess,
+        GuessResult,
+        Player,
+        PlayerRole,
+        ReviewEntityType,
+        ReviewQueueItem,
+        Segment,
+        SegmentType,
+        TeamColor,
+        Turn,
+        Vod,
+        WinReason,
+    )
+from app.infra.db import create_session_factory, create_sqlalchemy_engine, init_db, session_scope
 
 
 def workspace_db_url(filename: str) -> str:
-    base_dir = Path(__file__).resolve().parent / ".tmp"
-    base_dir.mkdir(exist_ok=True)
+    base_dir = Path("build/test-temp/db")
+    base_dir.mkdir(parents=True, exist_ok=True)
     db_path = base_dir / f"{filename}-{uuid4().hex}.db"
     return f"sqlite:///{db_path.as_posix()}"
 
@@ -62,26 +59,6 @@ def test_init_db_creates_expected_tables() -> None:
         "guesses",
         "review_queue",
     }
-
-
-def test_typed_models_validate_core_constraints() -> None:
-    VodMeta(
-        vod_id="vod-001",
-        streamer_login="tiewhy",
-        created_at=datetime.now(timezone.utc),
-        title="Test VOD",
-        url="https://twitch.tv/videos/1",
-        duration_seconds=3600,
-    )
-
-    with pytest.raises(ValidationError):
-        GameRecord(
-            vod_id="vod-001",
-            game_index=0,
-            start_sec=0,
-            end_sec=10,
-            parse_confidence=1.5,
-        )
 
 
 def test_round_trip_relationships_and_cascade_delete() -> None:

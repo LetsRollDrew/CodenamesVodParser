@@ -1,4 +1,4 @@
-"""Database engine and session helpers."""
+"""Database engine and session helpers"""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.engine import URL
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.config import Settings, get_settings
-from app.models import Base
+from app.core.models import Base
+from app.core.settings import Settings, get_settings
 
 SessionFactory = sessionmaker[Session]
 
