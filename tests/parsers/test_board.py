@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import numpy as np
 
-from app.board_parser import (
+from app.parsers.board import (
     board_dictionary,
     estimate_board_cell_boxes,
     normalize_board_word,
     parse_board_words,
     snap_word_to_board,
 )
-from app.models import ImageBoundingBox, OCRDetection
-from app.roi_config import ROIConfig
+from app.core.models import ImageBoundingBox, OCRDetection
+from app.infra.roi_config import ROIConfig
 
 
 class FakeOCRBackend:
@@ -135,3 +135,25 @@ def test_snap_word_to_board_uses_known_board_dictionary() -> None:
 
     assert snap_word_to_board("Antarctlca", board_state) == "ANTARCTICA"
     assert "ANTARCTICA" in board_dictionary(board_state)
+
+
+def test_parse_board_words_keeps_dictionary_correction_metadata() -> None:
+    frame = np.zeros((800, 1200, 3), dtype=np.uint8)
+    roi_config = make_roi_config()
+    responses = {
+        "board:0:0": [
+            OCRDetection(
+                text="ANTARCTIC",
+                confidence=0.93,
+                box=ImageBoundingBox(left=5, top=5, right=40, bottom=20),
+            )
+        ]
+    }
+
+    board_state = parse_board_words(frame, roi_config, FakeOCRBackend(responses))
+    corrected_cell = board_state.cells[0]
+
+    assert corrected_cell.raw_ocr_text == "ANTARCTIC"
+    assert corrected_cell.word == "ANTARCTICA"
+    assert corrected_cell.corrected_by_default_dictionary
+    assert corrected_cell.dictionary_similarity > 0.0

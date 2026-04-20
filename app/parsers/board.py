@@ -1,4 +1,4 @@
-"""Board parsing for the initial unrevealed 5x5 Codenames grid."""
+"""Board parsing for the initial unrevealed 5x5 Codenames grid"""
 
 from __future__ import annotations
 
@@ -10,9 +10,9 @@ from typing import Iterable
 
 import numpy as np
 
-from app.models import BoardCell, BoardState, ImageBoundingBox
-from app.ocr import OCRBackend, detect_text_with_fallback, pick_best_detection, prepare_ocr_image
-from app.roi_config import ROIConfig, crop_roi
+from app.core.models import BoardCell, BoardState, ImageBoundingBox
+from app.infra.roi_config import ROIConfig, crop_roi
+from app.vision.ocr.preprocessing import OCRBackend, detect_text_with_fallback, pick_best_detection, prepare_ocr_image
 
 BOARD_GRID_SIZE = 5
 
@@ -30,7 +30,15 @@ class BoardGridLayout:
 
 
 DEFAULT_BOARD_GRID_LAYOUT = BoardGridLayout()
-DEFAULT_WORD_LIST_PATH = Path(__file__).with_name("data") / "codenames_default_words.txt"
+DEFAULT_WORD_LIST_PATH = Path(__file__).resolve().parents[1] / "data" / "codenames_default_words.txt"
+
+
+@dataclass(frozen=True, slots=True)
+class BoardWordRefinement:
+    corrected_word: str
+    similarity: float = 0.0
+    runner_up_gap: float = 0.0
+    corrected_by_default_dictionary: bool = False
 
 
 def normalize_board_word(text: str) -> str:
@@ -132,9 +140,9 @@ def parse_board_words(
             hint=hint,
             layout=layout,
         )
-        word = normalize_board_word(detection.text) if detection else ""
-        if word:
-            word = _refine_board_word_from_default_dictionary(word)
+        raw_word = normalize_board_word(detection.text) if detection else ""
+        refinement = _refine_board_word_from_default_dictionary(raw_word) if raw_word else BoardWordRefinement("")
+        word = refinement.corrected_word
         confidence = detection.confidence if detection else 0.0
         cells.append(
             BoardCell(
@@ -143,6 +151,10 @@ def parse_board_words(
                 word=word,
                 confidence=confidence,
                 box=box,
+                raw_ocr_text=raw_word,
+                dictionary_similarity=refinement.similarity,
+                dictionary_runner_up_gap=refinement.runner_up_gap,
+                corrected_by_default_dictionary=refinement.corrected_by_default_dictionary,
             )
         )
 
@@ -163,14 +175,20 @@ def _detect_board_cell_word(
         if strip.size == 0:
             continue
         prepared_strip = prepare_ocr_image(strip, profile="board_word")
-        detection = pick_best_detection(
-            detect_text_with_fallback(
+        detections = detect_text_with_fallback(
+            ocr_backend,
+            strip,
+            prepared_image=prepared_strip,
+            hint=f"{hint}:v{variant_index}",
+        )
+        if not detections and variant_index == 0:
+            detections = detect_text_with_fallback(
                 ocr_backend,
                 strip,
                 prepared_image=prepared_strip,
-                hint=f"{hint}:v{variant_index}",
+                hint=hint,
             )
-        )
+        detection = pick_best_detection(detections)
         if detection is None:
             continue
         score = _board_word_detection_score(detection)
@@ -275,14 +293,14 @@ def board_dictionary(board_state: BoardState) -> set[str]:
     return {word for word in board_state.words if word}
 
 
-def _refine_board_word_from_default_dictionary(word: str) -> str:
+def _refine_board_word_from_default_dictionary(word: str) -> BoardWordRefinement:
     normalized = normalize_board_word(word)
     if not normalized:
-        return normalized
+        return BoardWordRefinement("")
 
     dictionary = default_word_dictionary()
     if not dictionary or normalized in dictionary:
-        return normalized
+        return BoardWordRefinement(normalized)
 
     best_word: str | None = None
     best_similarity = 0.0
@@ -297,11 +315,16 @@ def _refine_board_word_from_default_dictionary(word: str) -> str:
             second_best = similarity
 
     if best_word is None:
-        return normalized
+        return BoardWordRefinement(normalized)
 
     margin = best_similarity - second_best
     if best_similarity >= 0.94 and margin >= 0.03:
-        return best_word
+        return BoardWordRefinement(
+            corrected_word=best_word,
+            similarity=best_similarity,
+            runner_up_gap=margin,
+            corrected_by_default_dictionary=True,
+        )
 
     if (
         len(normalized) >= 6
@@ -309,6 +332,16 @@ def _refine_board_word_from_default_dictionary(word: str) -> str:
         and best_word.startswith(normalized)
         and margin >= 0.02
     ):
-        return best_word
+        return BoardWordRefinement(
+            corrected_word=best_word,
+            similarity=best_similarity,
+            runner_up_gap=margin,
+            corrected_by_default_dictionary=True,
+        )
 
-    return normalized
+    return BoardWordRefinement(
+        corrected_word=normalized,
+        similarity=best_similarity,
+        runner_up_gap=max(margin, 0.0),
+        corrected_by_default_dictionary=False,
+    )
