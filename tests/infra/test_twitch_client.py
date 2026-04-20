@@ -3,8 +3,8 @@ from typing import Mapping
 
 import pytest
 
-from app.config import Settings
-from app.twitch_client import HttpResponse, TwitchClient, TwitchClientError, parse_twitch_duration
+from app.core.settings import Settings
+from app.infra.twitch_client import HttpResponse, TwitchClient, TwitchClientError, parse_twitch_duration
 
 
 class FakeTransport:

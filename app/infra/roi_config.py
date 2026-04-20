@@ -1,4 +1,4 @@
-"""Normalized ROI configuration utilities for frame-based parsers."""
+"""Normalized ROI configuration utilities for frame-based parsers"""
 
 from __future__ import annotations
 

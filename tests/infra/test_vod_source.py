@@ -5,7 +5,7 @@ import io
 import pytest
 from PIL import Image
 
-from app.vod_source import VodSource, VodSourceError
+from app.infra.vod_source import VodSource, VodSourceError
 
 
 def _jpeg_bytes(color: tuple[int, int, int]) -> bytes:

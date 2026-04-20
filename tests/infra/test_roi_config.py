@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from app.roi_config import (
+from app.infra.roi_config import (
     REQUIRED_ROI_NAMES,
     ROIConfig,
     NormalizedROI,

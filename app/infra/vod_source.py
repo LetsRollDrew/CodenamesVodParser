@@ -1,4 +1,4 @@
-"""Bounded frame access for Twitch VODs using Streamlink and ffmpeg."""
+"""Bounded frame access for Twitch VODs using Streamlink and ffmpeg"""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from typing import BinaryIO, Callable, Iterator, Mapping, Protocol
 import numpy as np
 from PIL import Image
 
-from app.config import get_settings
+from app.core.settings import get_settings
 
 StreamSessionFactory = Callable[[], object]
 PopenFactory = Callable[..., subprocess.Popen]

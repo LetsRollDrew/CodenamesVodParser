@@ -1,4 +1,4 @@
-"""Twitch Helix client for broadcaster lookup and archive VOD discovery."""
+"""Twitch Helix client for broadcaster lookup and archive VOD discovery"""
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from app.config import Settings, get_settings
-from app.models import VodMeta
+from app.core.models import VodMeta
+from app.core.settings import Settings, get_settings
 
 HELIX_BASE_URL = "https://api.twitch.tv/helix"
 MAX_PAGE_SIZE = 100
