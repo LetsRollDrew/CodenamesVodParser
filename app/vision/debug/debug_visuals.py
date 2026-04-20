@@ -1,4 +1,4 @@
-"""Debug visual artifact helpers for smoke parsing."""
+"""Debug visual artifact helpers for smoke parsing"""
 
 from __future__ import annotations
 
@@ -8,10 +8,10 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
-from app.board_parser import crop_word_strip, estimate_board_cell_boxes
-from app.models import ImageBoundingBox, OCRDetection
-from app.ocr import OCRBackend, collapse_whitespace, prepare_ocr_image
-from app.roi_config import ROIConfig, crop_roi, render_roi_map
+from app.core.models import ImageBoundingBox, OCRDetection
+from app.infra.roi_config import ROIConfig, crop_roi, render_roi_map
+from app.parsers.board import crop_word_strip, estimate_board_cell_boxes
+from app.vision.ocr.preprocessing import OCRBackend, collapse_whitespace, prepare_ocr_image
 
 
 @dataclass(frozen=True, slots=True)
