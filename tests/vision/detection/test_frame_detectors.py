@@ -1,18 +1,23 @@
 from __future__ import annotations
 
-import numpy as np
+from pathlib import Path
 
-from app.frame_detectors import (
+import numpy as np
+from PIL import Image
+
+from app.vision.detection.frame_detectors import (
+    CounterObservation,
     detect_assassin_in_events,
     has_play_next_game,
     make_board_fingerprint,
+    parse_counter_observation,
     parse_counter_value,
     parse_game_counters,
     setup_screen_visible,
     winner_banner_visible,
 )
-from app.models import CardColor, ImageBoundingBox, OCRDetection
-from app.roi_config import ROIConfig
+from app.core.models import CardColor, ImageBoundingBox, OCRDetection
+from app.infra.roi_config import ROIConfig, load_roi_config
 
 
 class FakeOCRBackend:
@@ -22,6 +27,9 @@ class FakeOCRBackend:
     def detect_text(self, image: np.ndarray, *, hint: str | None = None) -> list[OCRDetection]:
         assert image.size > 0
         return list(self.responses.get(hint or "", []))
+
+
+STARTUP_FIXTURE_DIR = Path("build/debug/game3/smoke")
 
 
 def make_roi_config() -> ROIConfig:
@@ -83,6 +91,58 @@ def test_parse_game_counters_reads_both_sides() -> None:
     )
 
     assert parse_game_counters(frame, roi_config, ocr_backend) == (0, 1)
+
+
+def test_parse_game_counters_game3_startup_frame() -> None:
+    frame = np.asarray(Image.open(STARTUP_FIXTURE_DIR / "smoke-start-000000.000.png").convert("RGB"))[:, :, ::-1].copy()
+    roi_config = load_roi_config("config/rois.example.json")
+    ocr_backend = FakeOCRBackend(
+        {
+            "left_counter": [
+                OCRDetection(
+                    text="0",
+                    confidence=0.94,
+                    box=ImageBoundingBox(left=1, top=1, right=8, bottom=10),
+                )
+            ],
+            "right_counter": [
+                OCRDetection(
+                    text="9",
+                    confidence=0.95,
+                    box=ImageBoundingBox(left=1, top=1, right=8, bottom=10),
+                )
+            ],
+        }
+    )
+
+    assert parse_game_counters(frame, roi_config, ocr_backend) == (8, 9)
+
+
+def test_parse_counter_observation_uses_counter_shape_fallback_for_game3_left_counter() -> None:
+    counter = np.asarray(Image.open(STARTUP_FIXTURE_DIR / "smoke-probe-left-counter-000000.000.png").convert("RGB"))[
+        :, :, ::-1
+    ].copy()
+    observation = parse_counter_observation(
+        counter,
+        FakeOCRBackend(
+            {
+                "left_counter": [
+                    OCRDetection(
+                        text="0",
+                        confidence=0.94,
+                        box=ImageBoundingBox(left=1, top=1, right=8, bottom=10),
+                    )
+                ]
+            }
+        ),
+        hint="left_counter",
+    )
+
+    assert isinstance(observation, CounterObservation)
+    assert observation.value == 8
+    assert observation.confidence >= 0.97
+    assert observation.raw_text == "0"
+    assert observation.variant_name is not None
 
 
 def test_banner_detectors_use_targeted_ocr_regions() -> None:
