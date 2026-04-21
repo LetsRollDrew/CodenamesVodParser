@@ -1,4 +1,4 @@
-"""Turn reconstruction, winner detection, and game-level assembly helpers."""
+"""Turn reconstruction, winner detection, and game-level assembly helpers"""
 
 from __future__ import annotations
 
@@ -8,18 +8,7 @@ from pathlib import Path
 from PIL import Image
 from pydantic import BaseModel, Field
 
-from app.board_parser import parse_board_words
-from app.frame_detectors import (
-    detect_assassin_in_events,
-    has_play_next_game,
-    is_setup_screen_text,
-    is_winner_banner_text,
-    make_board_fingerprint,
-    parse_game_counters,
-    parse_top_banner_text,
-)
-from app.gamelog_parser import ClueEvent, GuessEvent, log_has_changed, parse_game_log
-from app.models import (
+from app.core.models import (
     CardColor,
     GameRecord,
     GuessRecord,
@@ -30,11 +19,22 @@ from app.models import (
     TurnRecord,
     WinReason,
 )
-from app.ocr import OCRBackend
-from app.review_queue import ReviewFlag, materialize_review_items, maybe_flag_review
-from app.roi_config import ROIConfig, crop_roi
-from app.roster_parser import parse_rosters
-from app.vod_source import FrameSample
+from app.infra.roi_config import ROIConfig, crop_roi
+from app.parsers.board import parse_board_words
+from app.parsers.gamelog import ClueEvent, GuessEvent, log_has_changed, parse_game_log
+from app.parsers.roster import parse_rosters
+from app.review.queue import ReviewFlag, materialize_review_items, maybe_flag_review
+from app.vision.detection.frame_detectors import (
+    detect_assassin_in_events,
+    has_play_next_game,
+    is_setup_screen_text,
+    is_winner_banner_text,
+    make_board_fingerprint,
+    parse_game_counters,
+    parse_top_banner_text,
+)
+from app.infra.vod_source import FrameSample
+from app.vision.ocr.preprocessing import OCRBackend
 
 
 class GameReconstructionResult(BaseModel):
@@ -201,6 +201,32 @@ def detect_winner(
         return TeamColor.BLUE, WinReason.COUNTER_ZERO, 0.98
     if right_counter == 0 and left_counter is not None:
         return TeamColor.RED, WinReason.COUNTER_ZERO, 0.98
+
+    if turns:
+        starting_team = turns[0].team_color
+        opposing_team = TeamColor.RED if starting_team is TeamColor.BLUE else TeamColor.BLUE
+        target_counts = {
+            starting_team: 9,
+            opposing_team: 8,
+        }
+        correct_words_by_team: dict[TeamColor, set[str]] = {
+            TeamColor.BLUE: set(),
+            TeamColor.RED: set(),
+        }
+        for turn in turns:
+            for guess in turn.guesses:
+                if guess.result is not GuessResult.CORRECT:
+                    continue
+                if guess.card_color.value != turn.team_color.value:
+                    continue
+                correct_words_by_team[turn.team_color].add(guess.word)
+        reached_targets = [
+            team_color
+            for team_color, target_count in target_counts.items()
+            if len(correct_words_by_team[team_color]) >= target_count
+        ]
+        if len(reached_targets) == 1:
+            return reached_targets[0], WinReason.COUNTER_ZERO, 0.91
 
     return None, None, 0.0
 
@@ -420,23 +446,58 @@ def _event_signature(event: ClueEvent | GuessEvent) -> tuple[str, str, str, str]
     return ("guess", event.player_name, event.word, event.card_color.value)
 
 
+def _events_equivalent(previous: ClueEvent | GuessEvent, current: ClueEvent | GuessEvent) -> bool:
+    if isinstance(previous, ClueEvent) and isinstance(current, ClueEvent):
+        return _event_signature(previous) == _event_signature(current)
+    if isinstance(previous, GuessEvent) and isinstance(current, GuessEvent):
+        if previous.word != current.word or previous.card_color != current.card_color:
+            return False
+        if abs(current.timestamp_sec - previous.timestamp_sec) > 20.0:
+            return False
+        if previous.player_name == "unknown" or current.player_name == "unknown":
+            return True
+        return previous.player_name == current.player_name
+    return False
+
+
 def _merge_visible_event_history(
     history: list[ClueEvent | GuessEvent],
     previous_visible: Sequence[ClueEvent | GuessEvent],
     current_visible: Sequence[ClueEvent | GuessEvent],
 ) -> tuple[list[ClueEvent | GuessEvent], list[ClueEvent | GuessEvent]]:
-    current_signatures = [_event_signature(event) for event in current_visible]
-    previous_signatures = [_event_signature(event) for event in previous_visible]
+    if not current_visible:
+        return history, list(previous_visible)
 
     overlap = 0
-    max_overlap = min(len(previous_signatures), len(current_signatures))
+    max_overlap = min(len(previous_visible), len(current_visible))
     for candidate in range(max_overlap, -1, -1):
-        if previous_signatures[-candidate:] == current_signatures[:candidate]:
+        if all(
+            _events_equivalent(previous, current)
+            for previous, current in zip(previous_visible[-candidate:], current_visible[:candidate])
+        ):
             overlap = candidate
             break
 
-    appended = list(current_visible[overlap:])
-    return history + appended, list(current_visible)
+    history_updated = list(history)
+    for event in current_visible[:overlap]:
+        if not isinstance(event, GuessEvent):
+            continue
+        replacement_index = _find_matching_guess_index(history_updated, event)
+        if replacement_index is None:
+            continue
+        existing = history_updated[replacement_index]
+        if isinstance(existing, GuessEvent) and _guess_event_preferred(event, existing):
+            history_updated[replacement_index] = event
+    for event in current_visible[overlap:]:
+        if isinstance(event, GuessEvent):
+            replacement_index = _find_matching_guess_index(history_updated, event)
+            if replacement_index is not None:
+                existing = history_updated[replacement_index]
+                if isinstance(existing, GuessEvent) and _guess_event_preferred(event, existing):
+                    history_updated[replacement_index] = event
+                continue
+        history_updated.append(event)
+    return history_updated, list(current_visible)
 
 
 def derive_game_windows(
@@ -521,3 +582,46 @@ def _save_game_log_snapshot(
     path = directory / f"{stem}.png"
     Image.fromarray(log_crop[:, :, ::-1]).save(path)
     return str(path)
+
+
+def _find_matching_guess_index(
+    history: Sequence[ClueEvent | GuessEvent],
+    candidate: GuessEvent,
+) -> int | None:
+    seen_current_turn = False
+    for index in range(len(history) - 1, -1, -1):
+        event = history[index]
+        if isinstance(event, ClueEvent):
+            if seen_current_turn:
+                break
+            seen_current_turn = True
+            continue
+        if candidate.timestamp_sec - event.timestamp_sec > 20.0 and seen_current_turn:
+            break
+        if not isinstance(event, GuessEvent):
+            continue
+        same_word_color_upgrade = (
+            event.word == candidate.word
+            and event.card_color != candidate.card_color
+            and CardColor.NEUTRAL in {event.card_color, candidate.card_color}
+        )
+        if event.word != candidate.word or (event.card_color != candidate.card_color and not same_word_color_upgrade):
+            continue
+        if not same_word_color_upgrade and abs(candidate.timestamp_sec - event.timestamp_sec) > 20.0:
+            continue
+        if (
+            event.player_name != "unknown"
+            and candidate.player_name != "unknown"
+            and event.player_name != candidate.player_name
+        ):
+            continue
+        return index
+    return None
+
+
+def _guess_event_preferred(candidate: GuessEvent, existing: GuessEvent) -> bool:
+    if existing.player_name == "unknown" and candidate.player_name != "unknown":
+        return True
+    if candidate.confidence > existing.confidence + 0.02:
+        return True
+    return candidate.timestamp_sec > existing.timestamp_sec and candidate.confidence >= existing.confidence
