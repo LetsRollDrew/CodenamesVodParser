@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import numpy as np
+from PIL import Image
 
-from app.gamelog_parser import ClueEvent, GuessEvent, log_has_changed, parse_game_log
-from app.models import BoardCell, BoardState, ImageBoundingBox, OCRDetection, PlayerRole, PlayerRosterEntry, TeamColor
-from app.roi_config import ROIConfig
+from app.parsers.gamelog import ClueEvent, GuessEvent, _ocr_row_fields, log_has_changed, parse_game_log
+from app.core.models import BoardCell, BoardState, ImageBoundingBox, OCRDetection, PlayerRole, PlayerRosterEntry, TeamColor
+from app.infra.roi_config import ROIConfig
 
 
 class FakeOCRBackend:
@@ -245,3 +246,249 @@ def test_parse_game_log_fuzzy_matches_log_name_to_roster_name() -> None:
     assert len(events) == 1
     assert isinstance(events[0], GuessEvent)
     assert events[0].player_name == "Cherry"
+
+
+def test_parse_game_log_prefers_guess_word_to_the_right_of_player_lane() -> None:
+    frame = np.zeros((600, 1000, 3), dtype=np.uint8)
+    roi_config = make_roi_config()
+    board_state = BoardState(
+        cells=[
+            BoardCell(
+                row=index // 5,
+                col=index % 5,
+                word=word,
+                confidence=0.95,
+                box=ImageBoundingBox(left=0, top=0, right=10, bottom=10),
+            )
+            for index, word in enumerate(["NIGHT", "TAP"])
+        ]
+    )
+    roster = make_roster()
+    log_box = ImageBoundingBox(left=800, top=300, right=980, bottom=540)
+    guess_row = ImageBoundingBox(left=12, top=168, right=170, bottom=200)
+    paint_box(frame, ImageBoundingBox(left=log_box.left + guess_row.left, top=log_box.top + guess_row.top, right=log_box.left + guess_row.right, bottom=log_box.top + guess_row.bottom), (60, 80, 220))
+
+    responses = {
+        "game_log": [
+            OCRDetection(text="Cherry", confidence=0.94, box=ImageBoundingBox(left=8, top=172, right=54, bottom=190)),
+            OCRDetection(text="NIGHT", confidence=0.93, box=ImageBoundingBox(left=44, top=170, right=82, bottom=192)),
+            OCRDetection(text="TAP", confidence=0.97, box=ImageBoundingBox(left=98, top=170, right=128, bottom=192)),
+        ]
+    }
+
+    events = parse_game_log(
+        frame,
+        roi_config,
+        FakeOCRBackend(responses),
+        roster,
+        board_state,
+        timestamp_sec=123.0,
+    )
+
+    assert len(events) == 1
+    assert isinstance(events[0], GuessEvent)
+    assert events[0].word == "TAP"
+
+
+def test_parse_game_log_joins_split_clue_fragments_and_prefers_rightmost_count_token() -> None:
+    frame = np.zeros((600, 1000, 3), dtype=np.uint8)
+    roi_config = make_roi_config()
+    board_state = make_board_state()
+    roster = make_roster()
+    log_box = ImageBoundingBox(left=800, top=300, right=980, bottom=540)
+    clue_row = ImageBoundingBox(left=12, top=116, right=170, bottom=158)
+    paint_box(
+        frame,
+        ImageBoundingBox(
+            left=log_box.left + clue_row.left,
+            top=log_box.top + clue_row.top,
+            right=log_box.left + clue_row.right,
+            bottom=log_box.top + clue_row.bottom,
+        ),
+        (60, 80, 220),
+    )
+
+    responses = {
+        "game_log": [
+            OCRDetection(text="Zek 67", confidence=0.95, box=ImageBoundingBox(left=8, top=120, right=62, bottom=138)),
+            OCRDetection(text="LEATH", confidence=0.90, box=ImageBoundingBox(left=72, top=118, right=118, bottom=140)),
+            OCRDetection(text="ER", confidence=0.88, box=ImageBoundingBox(left=120, top=118, right=136, bottom=140)),
+            OCRDetection(text="64", confidence=0.86, box=ImageBoundingBox(left=140, top=118, right=154, bottom=140)),
+        ]
+    }
+
+    events = parse_game_log(
+        frame,
+        roi_config,
+        FakeOCRBackend(responses),
+        roster,
+        board_state,
+        timestamp_sec=123.0,
+    )
+
+    assert len(events) == 1
+    assert isinstance(events[0], ClueEvent)
+    assert events[0].spymaster_name == "Zek 67"
+    assert events[0].clue_text == "LEATHER"
+    assert events[0].clue_count == "4"
+
+
+def test_parse_game_log_ignores_game_log_header_row_as_clue() -> None:
+    frame = np.zeros((600, 1000, 3), dtype=np.uint8)
+    roi_config = make_roi_config()
+    board_state = make_board_state()
+    roster = make_roster()
+    log_box = ImageBoundingBox(left=800, top=300, right=980, bottom=540)
+    clue_row = ImageBoundingBox(left=12, top=12, right=170, bottom=54)
+    paint_box(
+        frame,
+        ImageBoundingBox(
+            left=log_box.left + clue_row.left,
+            top=log_box.top + clue_row.top,
+            right=log_box.left + clue_row.right,
+            bottom=log_box.top + clue_row.bottom,
+        ),
+        (60, 80, 220),
+    )
+
+    responses = {
+        "game_log": [
+            OCRDetection(text="Zek 67", confidence=0.95, box=ImageBoundingBox(left=8, top=16, right=62, bottom=34)),
+            OCRDetection(text="GAMELOG", confidence=0.91, box=ImageBoundingBox(left=72, top=14, right=136, bottom=36)),
+            OCRDetection(text="1", confidence=0.86, box=ImageBoundingBox(left=142, top=14, right=156, bottom=36)),
+        ]
+    }
+
+    events = parse_game_log(
+        frame,
+        roi_config,
+        FakeOCRBackend(responses),
+        roster,
+        board_state,
+        timestamp_sec=123.0,
+    )
+
+    assert events == []
+
+
+def test_parse_game_log_rejects_board_word_like_clue_rows() -> None:
+    frame = np.zeros((600, 1000, 3), dtype=np.uint8)
+    roi_config = make_roi_config()
+    board_state = make_board_state()
+    roster = make_roster()
+    log_box = ImageBoundingBox(left=800, top=300, right=980, bottom=540)
+    clue_row = ImageBoundingBox(left=12, top=12, right=170, bottom=54)
+    paint_box(
+        frame,
+        ImageBoundingBox(
+            left=log_box.left + clue_row.left,
+            top=log_box.top + clue_row.top,
+            right=log_box.left + clue_row.right,
+            bottom=log_box.top + clue_row.bottom,
+        ),
+        (60, 80, 220),
+    )
+
+    responses = {
+        "game_log": [
+            OCRDetection(text="Zek 67", confidence=0.95, box=ImageBoundingBox(left=8, top=16, right=62, bottom=34)),
+            OCRDetection(text="TAP", confidence=0.90, box=ImageBoundingBox(left=72, top=14, right=118, bottom=36)),
+            OCRDetection(text="6", confidence=0.86, box=ImageBoundingBox(left=142, top=14, right=156, bottom=36)),
+        ]
+    }
+
+    events = parse_game_log(
+        frame,
+        roi_config,
+        FakeOCRBackend(responses),
+        roster,
+        board_state,
+        timestamp_sec=123.0,
+    )
+
+    assert len(events) == 1
+    assert isinstance(events[0], GuessEvent)
+    assert events[0].word == "TAP"
+
+
+def test_parse_game_log_does_not_snap_guess_to_global_dictionary_only_words() -> None:
+    frame = np.zeros((600, 1000, 3), dtype=np.uint8)
+    roi_config = make_roi_config()
+    board_state = BoardState(
+        cells=[
+            BoardCell(
+                row=index // 5,
+                col=index % 5,
+                word=word,
+                confidence=0.95,
+                box=ImageBoundingBox(left=0, top=0, right=10, bottom=10),
+            )
+            for index, word in enumerate(["NIGHT", "TAP", "STAFF", "CLOAK", "MAP"])
+        ]
+    )
+    roster = make_roster()
+    log_box = ImageBoundingBox(left=800, top=300, right=980, bottom=540)
+    guess_row = ImageBoundingBox(left=12, top=168, right=170, bottom=200)
+    paint_box(
+        frame,
+        ImageBoundingBox(
+            left=log_box.left + guess_row.left,
+            top=log_box.top + guess_row.top,
+            right=log_box.left + guess_row.right,
+            bottom=log_box.top + guess_row.bottom,
+        ),
+        (60, 80, 220),
+    )
+
+    responses = {
+        "game_log": [
+            OCRDetection(text="Cherry", confidence=0.94, box=ImageBoundingBox(left=8, top=172, right=54, bottom=190)),
+            OCRDetection(text="Antarctlca", confidence=0.93, box=ImageBoundingBox(left=64, top=170, right=130, bottom=192)),
+        ]
+    }
+
+    events = parse_game_log(
+        frame,
+        roi_config,
+        FakeOCRBackend(responses),
+        roster,
+        board_state,
+        timestamp_sec=123.0,
+    )
+
+    assert events == []
+
+
+def test_blank_game_log_returns_no_rows_not_exception() -> None:
+    frame = np.asarray(Image.open("build/debug/game3/smoke/smoke-start-000000.000.png").convert("RGB"))[:, :, ::-1].copy()
+    roi_config = make_roi_config()
+
+    events = parse_game_log(
+        frame,
+        roi_config,
+        FakeOCRBackend({}),
+        make_roster(),
+        make_board_state(),
+        timestamp_sec=0.0,
+    )
+
+    assert events == []
+
+
+def test_invalid_row_field_geometry_is_skipped_not_crashed() -> None:
+    log_frame = np.zeros((120, 250, 3), dtype=np.uint8)
+    row_box = ImageBoundingBox(left=357, top=0, right=400, bottom=100)
+
+    fields = _ocr_row_fields(
+        log_frame,
+        row_box,
+        row_index=0,
+        ocr_backend=FakeOCRBackend({}),
+        row_detections=[],
+    )
+
+    assert fields["team_strip"].box is None
+    assert fields["name"].box is None
+    assert fields["main"].box is None
+    assert fields["count"].box is None
+    assert fields["result"].box is None
