@@ -1,13 +1,15 @@
-"""Board-reveal detection helpers for smoke parsing."""
+"""Board-reveal detection helpers for smoke parsing"""
 
 from __future__ import annotations
 
 import numpy as np
 
-from app.gamelog_parser import ClueEvent, GuessEvent
-from app.models import BoardCell, BoardState, CardColor
-from app.roi_config import ROIConfig, crop_roi
-from app.smoke_banner import _last_clue_event
+from app.core.models import BoardCell, BoardState, CardColor
+from app.parsers.banner import _last_clue_event
+from app.parsers.gamelog import ClueEvent, GuessEvent
+from app.infra.roi_config import ROIConfig, crop_roi
+
+PendingRevealState = dict[tuple[int, int], tuple[CardColor, int]]
 
 
 def _capture_board_reveal_baseline(
@@ -23,6 +25,30 @@ def _capture_board_reveal_baseline(
     return baseline
 
 
+def _sync_board_reveals_from_history(
+    *,
+    previous_reveals: dict[tuple[int, int], CardColor | None],
+    pending_reveals: PendingRevealState,
+    board_state: BoardState,
+    history: list[ClueEvent | GuessEvent],
+) -> tuple[dict[tuple[int, int], CardColor | None], PendingRevealState]:
+    word_to_key = {
+        cell.word: (cell.row, cell.col)
+        for cell in board_state.cells
+    }
+    synced_reveals = dict(previous_reveals)
+    synced_pending = dict(pending_reveals)
+    for event in history:
+        if not isinstance(event, GuessEvent):
+            continue
+        key = word_to_key.get(event.word)
+        if key is None:
+            continue
+        synced_reveals[key] = event.card_color
+        synced_pending.pop(key, None)
+    return synced_reveals, synced_pending
+
+
 def _detect_board_reveal_guess_events(
     frame: np.ndarray,
     *,
@@ -30,15 +56,23 @@ def _detect_board_reveal_guess_events(
     board_state: BoardState,
     baseline: dict[tuple[int, int], tuple[np.ndarray, np.ndarray]],
     previous_reveals: dict[tuple[int, int], CardColor | None],
+    pending_reveals: PendingRevealState,
     history: list[ClueEvent | GuessEvent],
     timestamp_sec: float,
-) -> tuple[list[GuessEvent], dict[tuple[int, int], CardColor | None]]:
+    allow_board_reveal_scan: bool,
+    minimum_confirmations: int = 2,
+    minimum_black_confirmations: int = 3,
+    maximum_new_reveals_per_frame: int = 3,
+) -> tuple[list[GuessEvent], dict[tuple[int, int], CardColor | None], PendingRevealState]:
     current_turn = _last_clue_event(history)
     if current_turn is None:
-        return [], previous_reveals
+        return [], previous_reveals, {}
+    if not allow_board_reveal_scan:
+        return [], previous_reveals, {}
 
     board_frame = crop_roi(frame, roi_config.require("board_region"))
     current_reveals = dict(previous_reveals)
+    current_pending = dict(pending_reveals)
     new_events: list[GuessEvent] = []
 
     for cell in board_state.cells:
@@ -49,9 +83,27 @@ def _detect_board_reveal_guess_events(
 
         sample = _sample_board_cell_surface(board_frame, cell.box)
         current_color = _detect_revealed_card_color(sample, baseline_stats)
-        current_reveals[key] = current_color
-        if previous_reveals.get(key) is not None or current_color is None:
+        if previous_reveals.get(key) is not None:
+            current_pending.pop(key, None)
             continue
+        if current_color is None:
+            current_pending.pop(key, None)
+            continue
+
+        pending_color, pending_count = current_pending.get(key, (None, 0))
+        if pending_color == current_color:
+            pending_count += 1
+        else:
+            pending_count = 1
+        current_pending[key] = (current_color, pending_count)
+        required_confirmations = minimum_confirmations
+        if current_color is CardColor.BLACK:
+            required_confirmations = max(required_confirmations, minimum_black_confirmations)
+        if pending_count < required_confirmations:
+            continue
+
+        current_reveals[key] = current_color
+        current_pending.pop(key, None)
 
         new_events.append(
             GuessEvent(
@@ -60,11 +112,14 @@ def _detect_board_reveal_guess_events(
                 card_color=current_color,
                 timestamp_sec=timestamp_sec,
                 sequence_index=(cell.row * 5) + cell.col,
-                confidence=0.88,
+                confidence=0.7 if current_color is CardColor.BLACK else 0.88,
             )
         )
 
-    return new_events, current_reveals
+    if len(new_events) > maximum_new_reveals_per_frame:
+        return [], previous_reveals, {}
+
+    return new_events, current_reveals, current_pending
 
 
 def _sample_board_cell_surface(board_frame: np.ndarray, box: BoardCell | object) -> np.ndarray:
@@ -110,10 +165,10 @@ def _detect_revealed_card_color(
 
     blue, green, red = map(float, mean_bgr[:3])
     hue, saturation, value = map(float, mean_hsv[:3])
-    if value < 75.0:
-        return CardColor.BLACK
     if red > blue + 40.0 and red > green + 25.0 and saturation > 110.0:
         return CardColor.RED
     if blue > red + 28.0 and blue > green + 15.0 and 75.0 <= hue <= 135.0 and saturation > 95.0:
         return CardColor.BLUE
+    if value < 70.0 and saturation < 125.0:
+        return CardColor.BLACK
     return CardColor.NEUTRAL
