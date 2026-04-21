@@ -1,4 +1,4 @@
-"""Roster parsing for the left and right team panels."""
+"""Roster parsing for the left and right team panels"""
 
 from __future__ import annotations
 
@@ -8,9 +8,9 @@ from typing import Iterable
 import numpy as np
 from PIL import Image
 
-from app.models import ImageBoundingBox, OCRDetection, PlayerRole, PlayerRosterEntry, TeamColor
-from app.ocr import OCRBackend, collapse_whitespace, detect_text_with_fallback, prepare_ocr_image
-from app.roi_config import ROIConfig, crop_roi
+from app.core.models import ImageBoundingBox, OCRDetection, PlayerRole, PlayerRosterEntry, TeamColor
+from app.infra.roi_config import ROIConfig, crop_roi
+from app.vision.ocr.preprocessing import OCRBackend, collapse_whitespace, detect_text_with_fallback, prepare_ocr_image
 
 _EXCLUDED_NAME_TEXTS = {
     "operatives",

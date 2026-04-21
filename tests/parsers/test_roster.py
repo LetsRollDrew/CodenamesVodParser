@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import numpy as np
 
-from app.models import ImageBoundingBox, OCRDetection, PlayerRole, TeamColor
-from app.roi_config import ROIConfig
-from app.roster_parser import canonicalize_player_name, parse_rosters
+from app.parsers.roster import canonicalize_player_name, parse_rosters
+from app.core.models import ImageBoundingBox, OCRDetection, PlayerRole, TeamColor
+from app.infra.roi_config import ROIConfig
 
 
 class FakeOCRBackend:
