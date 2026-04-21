@@ -1,4 +1,4 @@
-"""Index full-VOD Codenames game windows from pregame/start/end anchors."""
+"""Index full-VOD Codenames game windows from pregame/start/end anchors"""
 
 from __future__ import annotations
 
@@ -9,8 +9,10 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from app.board_parser import parse_board_words
-from app.frame_detectors import (
+from app.parsers.board import parse_board_words
+from app.infra.roi_config import load_roi_config
+from app.infra.vod_source import VodSource
+from app.vision.detection.frame_detectors import (
     has_play_next_game,
     is_setup_panel_text,
     is_winner_banner_text,
@@ -19,9 +21,7 @@ from app.frame_detectors import (
     parse_top_banner_text,
     start_game_button_visible,
 )
-from app.ocr_backends import create_ocr_backend
-from app.roi_config import load_roi_config
-from app.vod_source import VodSource
+from app.vision.ocr.backends import create_ocr_backend
 
 
 class IndexedGameWindow(BaseModel):
