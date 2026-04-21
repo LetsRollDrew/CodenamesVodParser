@@ -1,20 +1,24 @@
 from __future__ import annotations
 
-from app.game_parser import (
-    GameBoundarySignal,
-    build_game_record,
-    classify_guess_result,
-    derive_game_windows,
-    parse_game_window,
-    parse_segment_games,
-    reconstruct_game,
-    split_game_windows,
-)
-from app.gamelog_parser import ClueEvent, GuessEvent
-from app.models import CardColor, GuessResult, ImageBoundingBox, OCRDetection, PlayerRole, PlayerRosterEntry, TeamColor, WinReason
-from app.review_queue import materialize_review_items
-from app.roi_config import ROIConfig
-from app.vod_source import FrameSample
+import app.reconstruction.game_reconstruction as game_assembler
+
+from app.core.models import CardColor, GuessResult, ImageBoundingBox, OCRDetection, PlayerRole, PlayerRosterEntry, TeamColor, WinReason
+
+from app.parsers.gamelog import ClueEvent, GuessEvent
+from app.review.queue import materialize_review_items
+from app.infra.roi_config import ROIConfig
+from app.infra.vod_source import FrameSample
+from app.vision.ocr.preprocessing import generate_ocr_variants
+
+GameBoundarySignal = game_assembler.GameBoundarySignal
+build_game_record = game_assembler.build_game_record
+classify_guess_result = game_assembler.classify_guess_result
+derive_game_windows = game_assembler.derive_game_windows
+parse_game_window = game_assembler.parse_game_window
+parse_segment_games = game_assembler.parse_segment_games
+reconstruct_game = game_assembler.reconstruct_game
+split_game_windows = game_assembler.split_game_windows
+_merge_visible_event_history = game_assembler._merge_visible_event_history
 
 
 def make_roster() -> list[PlayerRosterEntry]:
@@ -92,6 +96,22 @@ def make_base_frame() -> object:
     return __import__("numpy").zeros((600, 1000, 3), dtype=__import__("numpy").uint8)
 
 
+def repeat_counter_sequence(sequence: list[list[OCRDetection]]) -> list[list[OCRDetection]]:
+    # Counter OCR now probes several image variants per frame; keep each scripted frame
+    # reading stable across that fan-out so tests model frame-level behavior.
+    variant_reads = max(
+        1,
+        len(
+            generate_ocr_variants(
+                make_base_frame()[:20, :20],
+                profile="counter",
+                hint="left_counter",
+            )
+        ),
+    )
+    return [list(entry) for entry in sequence for _ in range(variant_reads)]
+
+
 def test_classify_guess_result_covers_blue_and_red_teams() -> None:
     assert classify_guess_result(TeamColor.BLUE, CardColor.BLUE) is GuessResult.CORRECT
     assert classify_guess_result(TeamColor.BLUE, CardColor.RED) is GuessResult.ENEMY
@@ -99,6 +119,34 @@ def test_classify_guess_result_covers_blue_and_red_teams() -> None:
     assert classify_guess_result(TeamColor.BLUE, CardColor.BLACK) is GuessResult.ASSASSIN
     assert classify_guess_result(TeamColor.RED, CardColor.RED) is GuessResult.CORRECT
     assert classify_guess_result(TeamColor.RED, CardColor.BLUE) is GuessResult.ENEMY
+
+
+def test_merge_visible_event_history_uses_same_duplicate_guard() -> None:
+    initial = GuessEvent(
+        player_name="unknown",
+        word="COLLAR",
+        card_color=CardColor.RED,
+        timestamp_sec=169.0,
+        sequence_index=0,
+        confidence=0.52,
+    )
+    improved = GuessEvent(
+        player_name="near",
+        word="COLLAR",
+        card_color=CardColor.RED,
+        timestamp_sec=183.0,
+        sequence_index=0,
+        confidence=0.61,
+    )
+
+    history, previous_visible = _merge_visible_event_history([], [], [initial])
+    history, previous_visible = _merge_visible_event_history(history, previous_visible, [])
+    history, previous_visible = _merge_visible_event_history(history, previous_visible, [improved])
+
+    assert len(history) == 1
+    assert history[0].player_name == "near"
+    assert history[0].confidence == 0.61
+    assert previous_visible == [improved]
 
 
 def test_reconstruct_game_builds_turns_and_detects_counter_zero_win() -> None:
@@ -182,6 +230,36 @@ def test_reconstruct_game_handles_assassin_loss() -> None:
 
     assert reconstruction.winner_team is TeamColor.RED
     assert reconstruction.win_reason is WinReason.ASSASSIN
+
+
+def test_reconstruct_game_inferrs_winner_from_reached_starting_team_target() -> None:
+    events = [
+        ClueEvent(
+            team_color=TeamColor.RED,
+            spymaster_name="Zek 67",
+            clue_text="PROM",
+            clue_count="4",
+            timestamp_sec=10.0,
+            sequence_index=0,
+            confidence=0.95,
+        )
+    ]
+    for index in range(9):
+        events.append(
+            GuessEvent(
+                player_name="Cherry",
+                word=f"WORD{index}",
+                card_color=CardColor.RED,
+                timestamp_sec=11.0 + index,
+                sequence_index=index + 1,
+                confidence=0.9,
+            )
+        )
+
+    reconstruction = reconstruct_game(events, make_roster())
+
+    assert reconstruction.winner_team is TeamColor.RED
+    assert reconstruction.win_reason is WinReason.COUNTER_ZERO
 
 
 def test_reconstruct_game_routes_low_confidence_events_to_review_queue() -> None:
@@ -283,12 +361,44 @@ def test_parse_game_window_reconstructs_one_game_from_frame_samples() -> None:
                 ],
             ],
             "left_counter": [
-                [OCRDetection(text="9", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))],
-                [OCRDetection(text="0", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))],
+                *repeat_counter_sequence(
+                    [
+                        [
+                            OCRDetection(
+                                text="9",
+                                confidence=0.95,
+                                box=ImageBoundingBox(left=1, top=1, right=10, bottom=10),
+                            )
+                        ],
+                        [
+                            OCRDetection(
+                                text="0",
+                                confidence=0.95,
+                                box=ImageBoundingBox(left=1, top=1, right=10, bottom=10),
+                            )
+                        ],
+                    ]
+                ),
             ],
             "right_counter": [
-                [OCRDetection(text="8", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))],
-                [OCRDetection(text="1", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))],
+                *repeat_counter_sequence(
+                    [
+                        [
+                            OCRDetection(
+                                text="8",
+                                confidence=0.95,
+                                box=ImageBoundingBox(left=1, top=1, right=10, bottom=10),
+                            )
+                        ],
+                        [
+                            OCRDetection(
+                                text="1",
+                                confidence=0.95,
+                                box=ImageBoundingBox(left=1, top=1, right=10, bottom=10),
+                            )
+                        ],
+                    ]
+                ),
             ],
         }
     )
@@ -330,16 +440,72 @@ def test_parse_segment_games_slices_multiple_windows() -> None:
                 OCRDetection(text="ANTARCTICA", confidence=0.97, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))
             ],
             "left_counter": [
-                [OCRDetection(text="0", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))],
-                [OCRDetection(text="0", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))],
-                [OCRDetection(text="2", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))],
-                [OCRDetection(text="2", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))],
+                *repeat_counter_sequence(
+                    [
+                        [
+                            OCRDetection(
+                                text="0",
+                                confidence=0.95,
+                                box=ImageBoundingBox(left=1, top=1, right=10, bottom=10),
+                            )
+                        ],
+                        [
+                            OCRDetection(
+                                text="0",
+                                confidence=0.95,
+                                box=ImageBoundingBox(left=1, top=1, right=10, bottom=10),
+                            )
+                        ],
+                        [
+                            OCRDetection(
+                                text="2",
+                                confidence=0.95,
+                                box=ImageBoundingBox(left=1, top=1, right=10, bottom=10),
+                            )
+                        ],
+                        [
+                            OCRDetection(
+                                text="2",
+                                confidence=0.95,
+                                box=ImageBoundingBox(left=1, top=1, right=10, bottom=10),
+                            )
+                        ],
+                    ]
+                ),
             ],
             "right_counter": [
-                [OCRDetection(text="1", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))],
-                [OCRDetection(text="1", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))],
-                [OCRDetection(text="0", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))],
-                [OCRDetection(text="0", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))],
+                *repeat_counter_sequence(
+                    [
+                        [
+                            OCRDetection(
+                                text="1",
+                                confidence=0.95,
+                                box=ImageBoundingBox(left=1, top=1, right=10, bottom=10),
+                            )
+                        ],
+                        [
+                            OCRDetection(
+                                text="1",
+                                confidence=0.95,
+                                box=ImageBoundingBox(left=1, top=1, right=10, bottom=10),
+                            )
+                        ],
+                        [
+                            OCRDetection(
+                                text="0",
+                                confidence=0.95,
+                                box=ImageBoundingBox(left=1, top=1, right=10, bottom=10),
+                            )
+                        ],
+                        [
+                            OCRDetection(
+                                text="0",
+                                confidence=0.95,
+                                box=ImageBoundingBox(left=1, top=1, right=10, bottom=10),
+                            )
+                        ],
+                    ]
+                ),
             ],
         }
     )
@@ -383,14 +549,46 @@ def test_derive_game_windows_skips_setup_and_finds_end_state() -> None:
                 [],
             ],
             "left_counter": [
-                [],
-                [OCRDetection(text="2", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))],
-                [OCRDetection(text="0", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))],
+                *repeat_counter_sequence(
+                    [
+                        [],
+                        [
+                            OCRDetection(
+                                text="2",
+                                confidence=0.95,
+                                box=ImageBoundingBox(left=1, top=1, right=10, bottom=10),
+                            )
+                        ],
+                        [
+                            OCRDetection(
+                                text="0",
+                                confidence=0.95,
+                                box=ImageBoundingBox(left=1, top=1, right=10, bottom=10),
+                            )
+                        ],
+                    ]
+                ),
             ],
             "right_counter": [
-                [],
-                [OCRDetection(text="3", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))],
-                [OCRDetection(text="1", confidence=0.95, box=ImageBoundingBox(left=1, top=1, right=10, bottom=10))],
+                *repeat_counter_sequence(
+                    [
+                        [],
+                        [
+                            OCRDetection(
+                                text="3",
+                                confidence=0.95,
+                                box=ImageBoundingBox(left=1, top=1, right=10, bottom=10),
+                            )
+                        ],
+                        [
+                            OCRDetection(
+                                text="1",
+                                confidence=0.95,
+                                box=ImageBoundingBox(left=1, top=1, right=10, bottom=10),
+                            )
+                        ],
+                    ]
+                ),
             ],
             "blue:operative:in_game": [
                 OCRDetection(text="â€ ", confidence=0.92, box=ImageBoundingBox(left=20, top=20, right=40, bottom=40))
