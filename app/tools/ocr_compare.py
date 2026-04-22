@@ -1,4 +1,4 @@
-"""One-frame OCR backend comparison for saved smoke snapshots."""
+"""One-frame OCR backend comparison for saved smoke snapshots"""
 
 from __future__ import annotations
 
@@ -10,10 +10,10 @@ import numpy as np
 from PIL import Image
 from pydantic import BaseModel, Field
 
-from app.board_parser import crop_word_strip, estimate_board_cell_boxes
-from app.ocr import prepare_ocr_image
-from app.ocr_backends import OCRBackendError, create_ocr_backend
-from app.roi_config import ROIConfig, crop_roi, load_roi_config
+from app.parsers.board import crop_word_strip, estimate_board_cell_boxes
+from app.infra.roi_config import ROIConfig, crop_roi, load_roi_config
+from app.vision.ocr.backends import OCRBackendError, create_ocr_backend
+from app.vision.ocr.preprocessing import prepare_ocr_image
 
 
 class OCRTextDetection(BaseModel):
