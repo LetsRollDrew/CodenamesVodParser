@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from app.models import ReviewEntityType
-from app.review_queue import materialize_review_items, maybe_flag_review, should_enqueue_review
+from app.core.models import ReviewEntityType
+from app.review.queue import materialize_review_items, maybe_flag_review, should_enqueue_review
 
 
 def test_should_enqueue_review_respects_threshold() -> None:

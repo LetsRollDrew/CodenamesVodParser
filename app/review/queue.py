@@ -1,10 +1,10 @@
-"""Helpers for routing low-confidence parser outputs into the review queue."""
+"""Helpers for routing low-confidence parser outputs into the review queue"""
 
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from app.models import ReviewEntityType, ReviewQueueItem
+from app.core.models import ReviewEntityType, ReviewQueueItem
 
 
 class ReviewFlag(BaseModel):
