@@ -1,0 +1,38 @@
+{
+  "roster": [
+    { "display_name": "ty", "team_color": "blue", "role": "operative" },
+    { "display_name": "Drew", "team_color": "blue", "role": "operative" },
+    { "display_name": "rush", "team_color": "blue", "role": "spymaster" },
+    { "display_name": "fembluca", "team_color": "red", "role": "operative" },
+    { "display_name": "Cherry", "team_color": "red", "role": "operative" },
+    { "display_name": "shadowsn", "team_color": "red", "role": "operative" },
+    { "display_name": "arker", "team_color": "red", "role": "spymaster" }
+  ],
+  "board_words": [
+    "SAIL",
+    "GOAT",
+    "BASS",
+    "BERRY",
+    "BLIND",
+    "WHEEL",
+    "DENTIST",
+    "TELESCOPE",
+    "PITCH",
+    "WITCH",
+    "TRICK",
+    "POP",
+    "SKYSCRAPER",
+    "VIKING",
+    "BOW",
+    "ATLANTIS",
+    "KANGAROO",
+    "PEACH",
+    "CZECH",
+    "POWDER",
+    "DESK",
+    "STREAM",
+    "SPIKE",
+    "KID",
+    "SHAKESPEARE"
+  ]
+}

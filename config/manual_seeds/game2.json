@@ -1,0 +1,39 @@
+{
+  "roster": [
+    { "display_name": "ty", "team_color": "blue", "role": "operative" },
+    { "display_name": "rush", "team_color": "blue", "role": "operative" },
+    { "display_name": "luke", "team_color": "blue", "role": "operative" },
+    { "display_name": "Drew", "team_color": "blue", "role": "spymaster" },
+    { "display_name": "Cherry", "team_color": "red", "role": "operative" },
+    { "display_name": "shadowsn", "team_color": "red", "role": "operative" },
+    { "display_name": "arker", "team_color": "red", "role": "operative" },
+    { "display_name": "revel", "team_color": "red", "role": "spymaster" }
+  ],
+  "board_words": [
+    "JUPITER",
+    "SCORPION",
+    "RADIO",
+    "BARN",
+    "FLAT",
+    "DENTIST",
+    "METER",
+    "TRACK",
+    "VOLUME",
+    "MISSILE",
+    "SCREEN",
+    "CANE",
+    "CAVE",
+    "PAINT",
+    "CRYSTAL",
+    "WALRUS",
+    "CANADA",
+    "GREECE",
+    "TOKYO",
+    "CARD",
+    "CUP",
+    "BIRTH",
+    "BELL",
+    "SAW",
+    "GRANDFATHER"
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "roster": [
+    { "display_name": "Drew", "team_color": "blue", "role": "operative" },
+    { "display_name": "luke", "team_color": "blue", "role": "operative" },
+    { "display_name": "Cherry", "team_color": "blue", "role": "operative" },
+    { "display_name": "ty", "team_color": "blue", "role": "spymaster" },
+    { "display_name": "near", "team_color": "red", "role": "operative" },
+    { "display_name": "revel", "team_color": "red", "role": "operative" },
+    { "display_name": "shadowsn", "team_color": "red", "role": "spymaster" }
+  ],
+  "board_words": [
+    "CRAFT",
+    "GLOVE",
+    "PAGE",
+    "HEART",
+    "COLLAR",
+    "TEA",
+    "FOREST",
+    "LADDER",
+    "CROWN",
+    "SUIT",
+    "BLOCK",
+    "WHEELCHAIR",
+    "DRAGON",
+    "STREET",
+    "BACON",
+    "HIT",
+    "ROOT",
+    "SCUBA DIVER",
+    "MODEL",
+    "ROULETTE",
+    "ROUND",
+    "FACE",
+    "BOOK",
+    "PENTAGON",
+    "CUBE"
+  ]
+}

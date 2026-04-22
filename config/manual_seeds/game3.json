@@ -1,0 +1,39 @@
+{
+  "roster": [
+    { "display_name": "ty", "team_color": "blue", "role": "operative" },
+    { "display_name": "Drew", "team_color": "blue", "role": "operative" },
+    { "display_name": "arker", "team_color": "blue", "role": "operative" },
+    { "display_name": "luke", "team_color": "blue", "role": "spymaster" },
+    { "display_name": "shadowsn", "team_color": "red", "role": "operative" },
+    { "display_name": "near", "team_color": "red", "role": "operative" },
+    { "display_name": "revel", "team_color": "red", "role": "operative" },
+    { "display_name": "Cherry", "team_color": "red", "role": "spymaster" }
+  ],
+  "board_words": [
+    "EUROPE",
+    "RIFLE",
+    "LOG",
+    "FEVER",
+    "LEPRECHAUN",
+    "RAIL",
+    "THORN",
+    "BRAIN",
+    "SOCK",
+    "CODE",
+    "GROOM",
+    "ANGEL",
+    "PIT",
+    "GREENHOUSE",
+    "GOLDILOCKS",
+    "SEED",
+    "SATELLITE",
+    "WEB",
+    "JEWELER",
+    "STAFF",
+    "OPERA",
+    "LUMBERJACK",
+    "PURSE",
+    "SIGN",
+    "STOCK"
+  ]
+}
