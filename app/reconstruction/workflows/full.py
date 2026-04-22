@@ -1,4 +1,4 @@
-"""Automatic full-game reconstruction for one Codenames clip or VOD window."""
+"""Automatic full-game reconstruction for one Codenames clip or VOD window"""
 
 from __future__ import annotations
 
@@ -9,15 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from app.board_parser import parse_board_words
-from app.frame_detectors import parse_game_counters, parse_top_banner_text, setup_screen_visible
-from app.gamelog_parser import ClueEvent, GuessEvent, log_has_changed, parse_game_log
-from app.models import BoardState, CardColor, PlayerRosterEntry, TeamColor
-from app.ocr_backends import create_ocr_backend
-from app.roi_config import crop_roi, load_roi_config
-from app.roster_parser import parse_rosters
-from app.selector_attribution import attribute_selectors_from_analysis
-from app.smoke import (
+from app.cli.smoke import (
     _capture_board_reveal_baseline,
     _detect_revealed_card_color,
     _infer_active_guessing_team,
@@ -28,7 +20,16 @@ from app.smoke import (
     _parse_center_clue_banner,
     _sample_board_cell_surface,
 )
-from app.vod_source import VodSource
+from app.core.models import BoardState, CardColor, PlayerRosterEntry, TeamColor
+from app.infra.roi_config import crop_roi, load_roi_config
+from app.infra.vod_source import VodSource
+from app.parsers.board import parse_board_words
+from app.parsers.gamelog import ClueEvent, GuessEvent, log_has_changed, parse_game_log
+from app.parsers.roster import parse_rosters
+from app.parsers.selectors.attribution import attribute_selectors_from_analysis
+from app.parsers.selectors.resolution import merge_selector_results_into_analysis, resolve_selector_fields_inplace
+from app.vision.detection.frame_detectors import parse_game_counters, parse_top_banner_text, setup_screen_visible
+from app.vision.ocr.backends import create_ocr_backend
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,9 +155,11 @@ def _build_turn_schedule(
         and observation.clue_count.isdigit()
         and len(observation.clue_count) == 1
         and observation.clue_count != "0"
+        and observation.timestamp_sec < clip_end_sec
     ]
     if not filtered:
         return []
+    filtered.sort(key=lambda item: item.timestamp_sec)
 
     segments: list[list[ClueObservation]] = []
     current: list[ClueObservation] = []
@@ -199,15 +202,31 @@ def _build_turn_schedule(
             segment[0].timestamp_sec,
         )
         next_segment_start = clip_end_sec if turn_index + 1 >= len(merged_segments) else merged_segments[turn_index + 1][0].timestamp_sec
+        inferred_team = _infer_turn_team(segment, roster)
+        inferred_spymaster = ""
+        if inferred_team is not None:
+            inferred_spymaster = next(
+                (
+                    player.display_name
+                    for player in roster
+                    if player.team_color == inferred_team and player.role.value == "spymaster"
+                ),
+                "",
+            )
+        turn_probe = {
+            "clue_text": chosen_text,
+            "team_color": "" if inferred_team is None else inferred_team.value,
+            "spymaster_name": inferred_spymaster,
+        }
         clue_matches = [
             event
             for record in visible_frames
             if clue_timestamp_sec <= record.timestamp_sec <= next_segment_start
             for event in record.events
-            if isinstance(event, ClueEvent) and _clue_matches_turn(event, {"clue_text": chosen_text, "team_color": "", "spymaster_name": ""})
+            if isinstance(event, ClueEvent) and _clue_matches_turn(event, turn_probe)
         ]
         visible_guess_count = sum(
-            len(_visible_guesses_for_turn(record.events, {"clue_text": chosen_text, "team_color": "", "spymaster_name": ""}))
+            len(_visible_guesses_for_turn(record.events, turn_probe))
             for record in visible_frames
             if clue_timestamp_sec <= record.timestamp_sec <= next_segment_start
         )
@@ -221,6 +240,7 @@ def _build_turn_schedule(
                 "clue_matches": clue_matches,
                 "visible_guess_count": visible_guess_count,
                 "duration_sec": segment[-1].timestamp_sec - segment[0].timestamp_sec,
+                "inferred_team": None if inferred_team is None else inferred_team.value,
             }
         )
 
@@ -232,6 +252,8 @@ def _build_turn_schedule(
         if not has_clue_matches and not has_visible_guesses and (support == 1 or candidate["duration_sec"] < 10.0):
             continue
         filtered_segments.append(candidate)
+
+    filtered_segments = _drop_weaker_repeated_clue_candidates(filtered_segments)
 
     coalesced_segments: list[dict[str, Any]] = []
     for candidate in filtered_segments:
@@ -246,16 +268,26 @@ def _build_turn_schedule(
             coalesced_segments[-1]["next_segment_start"] = candidate["next_segment_start"]
             continue
         coalesced_segments.append(candidate)
+    coalesced_segments.sort(key=lambda item: float(item["clue_timestamp_sec"]))
 
     starting_team = _infer_starting_team(observations)
+    if starting_team is None and coalesced_segments:
+        inferred_start = coalesced_segments[0].get("inferred_team")
+        starting_team = None if inferred_start is None else TeamColor(inferred_start)
     if starting_team is None and coalesced_segments:
         starting_team = _infer_turn_team(coalesced_segments[0]["segment"], roster)
     if starting_team is None:
         starting_team = TeamColor.BLUE
 
     turns: list[dict[str, Any]] = []
+    previous_team: TeamColor | None = None
     for turn_index, candidate in enumerate(coalesced_segments):
-        if starting_team is TeamColor.BLUE:
+        inferred_team = candidate.get("inferred_team")
+        if inferred_team is not None:
+            team_color = TeamColor(inferred_team)
+        elif previous_team is not None:
+            team_color = TeamColor.RED if previous_team is TeamColor.BLUE else TeamColor.BLUE
+        elif starting_team is TeamColor.BLUE:
             team_color = TeamColor.BLUE if turn_index % 2 == 0 else TeamColor.RED
         else:
             team_color = TeamColor.RED if turn_index % 2 == 0 else TeamColor.BLUE
@@ -277,10 +309,11 @@ def _build_turn_schedule(
                 "clue_timestamp_sec": round(candidate["clue_timestamp_sec"], 3),
             }
         )
+        previous_team = team_color
 
     for index, turn in enumerate(turns):
         next_start = clip_end_sec if index + 1 >= len(turns) else float(turns[index + 1]["clue_timestamp_sec"])
-        turn["window_end_sec"] = round(next_start, 3)
+        turn["window_end_sec"] = round(max(float(turn["clue_timestamp_sec"]) + 0.5, next_start), 3)
         turn["guesses"] = []
 
     return turns
@@ -294,6 +327,46 @@ def _clue_matches_turn(event: ClueEvent, turn: dict[str, Any]) -> bool:
     if event.team_color.value == turn["team_color"]:
         return True
     return event.spymaster_name == turn["spymaster_name"]
+
+
+def _drop_weaker_repeated_clue_candidates(
+    candidates: list[dict[str, Any]],
+    *,
+    time_window_sec: float = 180.0,
+) -> list[dict[str, Any]]:
+    if not candidates:
+        return []
+
+    filtered: list[dict[str, Any]] = []
+    for candidate in sorted(candidates, key=lambda item: float(item["clue_timestamp_sec"])):
+        duplicate_index = next(
+            (
+                index
+                for index, existing in enumerate(filtered)
+                if existing["clue_text"] == candidate["clue_text"]
+                and existing["clue_count"] == candidate["clue_count"]
+                and abs(float(existing["clue_timestamp_sec"]) - float(candidate["clue_timestamp_sec"])) <= time_window_sec
+            ),
+            None,
+        )
+        if duplicate_index is None:
+            filtered.append(candidate)
+            continue
+
+        existing = filtered[duplicate_index]
+        existing_strength = (
+            int(existing["visible_guess_count"]) * 10
+            + len(existing["clue_matches"]) * 2
+            + len(existing["segment"])
+        )
+        candidate_strength = (
+            int(candidate["visible_guess_count"]) * 10
+            + len(candidate["clue_matches"]) * 2
+            + len(candidate["segment"])
+        )
+        if candidate_strength > existing_strength:
+            filtered[duplicate_index] = candidate
+    return filtered
 
 
 def _visible_guesses_for_turn(
@@ -821,9 +894,17 @@ def _prune_turn_guesses(turns: list[dict[str, Any]]) -> None:
         turn["guesses"] = sorted(filtered, key=lambda item: item["timestamp_sec"])
 
 
-def _selector_payload(turns: list[dict[str, Any]], clip_path: str, roster: list[PlayerRosterEntry], board_words: list[str]) -> dict[str, Any]:
+def _selector_payload(
+    turns: list[dict[str, Any]],
+    clip_path: str,
+    roster: list[PlayerRosterEntry],
+    board_words: list[str],
+    *,
+    reference_frame_sec: float,
+) -> dict[str, Any]:
     return {
         "clip_path": clip_path,
+        "reference_frame_sec": reference_frame_sec,
         "roster": [player.model_dump(mode="json") for player in roster],
         "board_words": board_words,
         "turns": turns,
@@ -887,12 +968,16 @@ def reconstruct_game_segment(
                 if materialized_board is not None:
                     best_board = materialized_board
 
-        top_banner_text = parse_top_banner_text(frame, roi_config, ocr_backend)
-        clue_text, clue_count = _parse_center_clue_banner(
-            frame,
-            roi_config=roi_config,
-            ocr_backend=ocr_backend,
-        )
+        top_banner_text = ""
+        clue_text = ""
+        clue_count = None
+        if not setup_visible:
+            top_banner_text = parse_top_banner_text(frame, roi_config, ocr_backend)
+            clue_text, clue_count = _parse_center_clue_banner(
+                frame,
+                roi_config=roi_config,
+                ocr_backend=ocr_backend,
+            )
         left_counter, right_counter = parse_game_counters(frame, roi_config, ocr_backend)
         counter_samples.append(
             CounterSample(
@@ -905,7 +990,7 @@ def reconstruct_game_segment(
             last_left_counter = left_counter
         if right_counter is not None:
             last_right_counter = right_counter
-        if clue_text and clue_count and clue_count.isdigit():
+        if not setup_visible and clue_text and clue_count and clue_count.isdigit():
             clue_observations.append(
                 ClueObservation(
                     timestamp_sec=sample.timestamp_sec,
@@ -917,7 +1002,7 @@ def reconstruct_game_segment(
                 )
             )
 
-        if best_roster and best_board is not None:
+        if not setup_visible and best_roster and best_board is not None:
             log_frame = crop_roi(frame, roi_config.require("game_log_region"))
             if log_has_changed(previous_log_frame, log_frame):
                 parsed_events = parse_game_log(
@@ -938,10 +1023,35 @@ def reconstruct_game_segment(
         raise RuntimeError("Could not materialize roster and board state from the clip")
 
     effective_clip_end_sec = start_sec + duration_sec
+    previous_zero_side: str | None = None
+    previous_zero_timestamp: float | None = None
     for counter_sample in counter_samples:
-        if counter_sample.left_counter == 0 or counter_sample.right_counter == 0:
+        zero_side: str | None = None
+        if counter_sample.left_counter == 0:
+            zero_side = "left"
+        elif counter_sample.right_counter == 0:
+            zero_side = "right"
+        if zero_side is None:
+            previous_zero_side = None
+            previous_zero_timestamp = None
+            continue
+        if (
+            previous_zero_side == zero_side
+            and previous_zero_timestamp is not None
+            and counter_sample.timestamp_sec - previous_zero_timestamp <= max(3.0, 1.5 / max(scan_fps, 0.1))
+        ):
             effective_clip_end_sec = min(effective_clip_end_sec, counter_sample.timestamp_sec + 2.0)
             break
+        previous_zero_side = zero_side
+        previous_zero_timestamp = counter_sample.timestamp_sec
+
+    latest_evidence_sec = max(
+        [start_sec]
+        + [item.timestamp_sec for item in clue_observations]
+        + [item.timestamp_sec for item in visible_frames]
+    )
+    if effective_clip_end_sec < latest_evidence_sec:
+        effective_clip_end_sec = min(start_sec + duration_sec, latest_evidence_sec + max(5.0, 2.0 / max(scan_fps, 0.1)))
 
     turns = _build_turn_schedule(
         clue_observations,
@@ -1022,28 +1132,25 @@ def reconstruct_game_segment(
     if enable_selector_attribution:
         try:
             selector_results = attribute_selectors_from_analysis(
-                analysis=_selector_payload(turns, clip_path, best_roster, best_board.words),
+                analysis=_selector_payload(
+                    turns,
+                    clip_path,
+                    best_roster,
+                    best_board.words,
+                    reference_frame_sec=max(0.0, start_sec + min(5.0, duration_sec / 4.0)),
+                ),
                 analysis_reference_path=None,
                 roi_config_path=roi_config_path,
                 output_dir=selector_output_dir,
                 ffmpeg_path=ffmpeg_path,
+                process_timeout_sec=process_timeout_sec,
                 ocr_backend_name=ocr_backend_name,
                 ocr_device=ocr_device,
                 window_sec=selector_window_sec,
                 fps=selector_fps,
             )
-            selector_lookup = {
-                (item["turn_index"], item["guess_index"]): item
-                for item in selector_results["guesses"]
-            }
-            for turn in analysis["turns"]:
-                for guess_index, guess in enumerate(turn["guesses"]):
-                    selector_item = selector_lookup.get((turn["turn_index"], guess_index))
-                    if selector_item is None:
-                        continue
-                    guess["selector_crop_path"] = selector_item["crop_path"]
-                    guess["selector_crop_x4_path"] = selector_item["crop_x4_path"]
-                    guess["selector_candidates"] = selector_item["candidate_scores"]
+            merge_selector_results_into_analysis(analysis, selector_results)
+            resolve_selector_fields_inplace(analysis, ocr_backend=ocr_backend)
         except Exception as error:
             analysis["selector_attribution_error"] = str(error)
 
